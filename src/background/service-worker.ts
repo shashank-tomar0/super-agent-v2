@@ -111,6 +111,7 @@ async function processScreenshot(
     x: number; y: number; width: number; height: number;
     kind: string; label: string;
   }> = [],
+  dpr: number = 1,
 ): Promise<ProcessedScreenshotResult> {
   await ensureOffscreenDocument();
 
@@ -136,13 +137,14 @@ async function processScreenshot(
     };
     chrome.runtime.onMessage.addListener(listener);
 
-    // Send the screenshot + sensitive regions to the offscreen document.
+    // Send the screenshot + sensitive regions + DPR to the offscreen document.
     chrome.runtime.sendMessage({
       type: "process-screenshot",
       dataUrl,
       width,
       height,
       sensitiveRegions,
+      dpr,
     });
   });
 }
@@ -151,13 +153,14 @@ async function processScreenshot(
  * Get sensitive element positions from the content script.
  * Returns bounding boxes of password fields, credit cards, ID numbers, etc.
  */
-async function getSensitiveRegions(tabId: number): Promise<Array<{
-  x: number; y: number; width: number; height: number;
-  kind: string; label: string;
-}> | null> {
+async function getSensitiveRegions(tabId: number): Promise<{
+  regions: Array<{ x: number; y: number; width: number; height: number; kind: string; label: string }>;
+  dpr: number;
+} | null> {
   try {
     const result = await chrome.tabs.sendMessage(tabId, { kind: "get-sensitive-regions" }) as any;
-    return result?.sensitiveRegions ?? null;
+    if (!result?.sensitiveRegions) return null;
+    return { regions: result.sensitiveRegions, dpr: result.dpr ?? 1 };
   } catch {
     return null;
   }
@@ -174,12 +177,16 @@ export async function captureAndProcessScreenshot(): Promise<{
   const captured = await captureVisibleTab();
   if (!captured) return null;
 
-  // Get sensitive regions from the content script.
+  // Get sensitive regions + DPR from the content script.
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const sensitiveRegions = tab?.id ? await getSensitiveRegions(tab.id) : null;
+  const sensitiveData = tab?.id ? await getSensitiveRegions(tab.id) : null;
+  const dpr = sensitiveData?.dpr ?? 1;
+  const sensitiveRegions = sensitiveData?.regions ?? [];
+
+  console.log(`[VLEE] Screenshot: ${captured.width}x${captured.height} @ ${dpr}x DPR, ${sensitiveRegions.length} sensitive regions found`);
 
   const processed = await processScreenshot(
-    captured.dataUrl, captured.width, captured.height, sensitiveRegions ?? [],
+    captured.dataUrl, captured.width, captured.height, sensitiveRegions, dpr,
   );
   return { original: captured.dataUrl, processed };
 }

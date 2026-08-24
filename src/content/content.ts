@@ -42,7 +42,8 @@ chrome.runtime.onMessage.addListener(
           ok: true,
           detail: "sensitive-regions",
           sensitiveRegions: getSensitiveRegions(),
-        } satisfies ActionResult & { sensitiveRegions: ReturnType<typeof getSensitiveRegions> });
+          dpr: window.devicePixelRatio || 1,
+        });
         return false;
 
       case "capture-and-act":

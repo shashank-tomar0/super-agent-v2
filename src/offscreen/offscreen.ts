@@ -197,6 +197,7 @@ async function processScreenshot(
   width: number,
   height: number,
   sensitiveRegions: SensitiveRegion[] = [],
+  dpr: number = 1,
 ): Promise<{
   redactedDataUrl: string;
   detections: Array<{
@@ -209,6 +210,7 @@ async function processScreenshot(
   processingTimeMs: number;
 }> {
   const startTime = performance.now();
+  console.log(`[VLEE Offscreen] Processing ${width}x${height} screenshot, DPR=${dpr}, ${sensitiveRegions.length} DOM regions + face detection`);
 
   // Load the screenshot into an ImageBitmap.
   const response = await fetch(dataUrl);
@@ -223,14 +225,17 @@ async function processScreenshot(
 
   const allDetections: DetectedPII[] = [];
 
+  // Scale factor: DOM coordinates are CSS pixels, screenshot is device pixels.
+  const scale = dpr;
+
   // 1. DOM-guided redaction — redact known sensitive regions.
   for (const region of sensitiveRegions) {
-    // Expand region by 4px padding for safety.
-    const padding = 4;
-    const rx = Math.max(0, region.x - padding);
-    const ry = Math.max(0, region.y - padding);
-    const rw = Math.min(width - rx, region.width + padding * 2);
-    const rh = Math.min(height - ry, region.height + padding * 2);
+    // Scale CSS coordinates to device pixels + expand by 4px padding.
+    const padding = 4 * scale;
+    const rx = Math.max(0, Math.round(region.x * scale - padding));
+    const ry = Math.max(0, Math.round(region.y * scale - padding));
+    const rw = Math.min(width - rx, Math.round(region.width * scale + padding * 2));
+    const rh = Math.min(height - ry, Math.round(region.height * scale + padding * 2));
 
     if (rw <= 0 || rh <= 0) continue;
 
@@ -310,6 +315,8 @@ async function processScreenshot(
     reader.readAsDataURL(redactedBlob);
   });
 
+  console.log(`[VLEE Offscreen] Redacted ${allDetections.length} items (${faceRegions.length} faces, ${sensitiveRegions.length} DOM regions) in ${(performance.now() - startTime).toFixed(0)}ms`);
+
   return {
     redactedDataUrl,
     detections: allDetections.map((d) => ({
@@ -333,6 +340,7 @@ chrome.runtime.onMessage.addListener(
       width?: number;
       height?: number;
       sensitiveRegions?: SensitiveRegion[];
+      dpr?: number;
     },
     _sender: chrome.runtime.MessageSender,
     sendResponse: (response: any) => void,
@@ -348,6 +356,7 @@ chrome.runtime.onMessage.addListener(
         message.width,
         message.height,
         message.sensitiveRegions ?? [],
+        message.dpr ?? 1,
       )
         .then((result) => {
           // Send result back via sendMessage, NOT sendResponse.
