@@ -116,17 +116,20 @@ async function processScreenshot(
 ): Promise<ProcessedScreenshotResult> {
   await ensureOffscreenDocument();
 
+  const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
+      chrome.runtime.onMessage.removeListener(listener);
       reject(new Error("Offscreen processing timed out after 10s"));
     }, 10000);
 
     // Listen for the response from the offscreen document.
     const listener = (
-      message: { type: string; result?: ProcessedScreenshotResult; error?: string },
+      message: { type: string; requestId?: string; result?: ProcessedScreenshotResult; error?: string },
       _sender: chrome.runtime.MessageSender,
     ) => {
-      if (message.type === "screenshot-processed") {
+      if (message.type === "screenshot-processed" && message.requestId === requestId) {
         clearTimeout(timeout);
         chrome.runtime.onMessage.removeListener(listener);
         if (message.error) {
@@ -141,6 +144,7 @@ async function processScreenshot(
     // Send the screenshot + sensitive regions + DPR to the offscreen document.
     chrome.runtime.sendMessage({
       type: "process-screenshot",
+      requestId,
       dataUrl,
       width,
       height,
@@ -314,12 +318,12 @@ async function start(task: string, tabId: number): Promise<void> {
     });
   } finally {
     running = false;
+    const wasAborted = abort?.signal.aborted === true;
     abort = null;
 
     // Save session to history.
     const lastEntry = transcript.filter((e) => e.role === "assistant").pop();
     const hasError = transcript.some((e) => e.role === "error");
-    const wasAborted = abort === null && !hasError;
     await saveSession({
       id: `session-${taskStartTime}`,
       task,

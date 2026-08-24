@@ -390,6 +390,7 @@ chrome.runtime.onMessage.addListener(
   (
     message: {
       type: string;
+      requestId?: string;
       dataUrl?: string;
       width?: number;
       height?: number;
@@ -405,6 +406,7 @@ chrome.runtime.onMessage.addListener(
       message.width &&
       message.height
     ) {
+      const reqId = message.requestId;
       processScreenshot(
         message.dataUrl,
         message.width,
@@ -416,6 +418,7 @@ chrome.runtime.onMessage.addListener(
           // Send result back via sendMessage, NOT sendResponse.
           chrome.runtime.sendMessage({
             type: "screenshot-processed",
+            requestId: reqId,
             result,
           });
           sendResponse({ received: true });
@@ -423,6 +426,7 @@ chrome.runtime.onMessage.addListener(
         .catch((error) => {
           chrome.runtime.sendMessage({
             type: "screenshot-processed",
+            requestId: reqId,
             error: error.message,
           });
           sendResponse({ received: true, error: error.message });
