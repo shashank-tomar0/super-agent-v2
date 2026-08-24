@@ -25,6 +25,7 @@ import { detectInjection, gate } from "./safety";
 import { detectAllPII } from "./pii-detector";
 import { redactSnapshot } from "./redaction";
 import { tokenizer } from "./tokenizer";
+import { tryDeterministic } from "./deterministic";
 import { createPlanner } from "./providers";
 import type { ConvMessage, ToolOutcome } from "./providers/types";
 
@@ -217,11 +218,25 @@ export async function runTask(
     }
   }
 
+  // Tokenize PII in the user's task (same vault as page PII).
+  // This ensures the LLM sees <ORG_3> in both the task and the page.
+  const { task: tokenizedTask, tokenCount: taskTokenCount } = tokenizer.tokenizeTask(task);
+  if (taskTokenCount > 0) {
+    emit({
+      kind: "entry",
+      entry: {
+        id: nextId(),
+        role: "system",
+        text: `Task privacy: tokenized ${taskTokenCount} PII item(s) in your request.`,
+      },
+    });
+  }
+
   const messages: ConvMessage[] = [
     {
       role: "user",
       content:
-        taskPrompt(task, tab.url ?? "", tab.title ?? "") +
+        taskPrompt(tokenizedTask, tab.url ?? "", tab.title ?? "") +
         (snapshot ? `\n\n--- Current page ---\n${renderSnapshot(snapshot)}` : ""),
     },
   ];
@@ -230,6 +245,54 @@ export async function runTask(
 
   for (let step = 0; step < settings.maxSteps; step++) {
     if (signal.aborted) return;
+
+    // Try deterministic resolution first (skip LLM for simple tasks).
+    // The architecture diagram says: "deterministic planner can do it?"
+    if (step > 0) {
+      const taskText = messages.filter((m) => m.role === "user").pop()?.content ?? task;
+      const lastSentence = taskText.split("\n").filter((l) => l.startsWith("Task:")).pop()?.slice(6) ?? task;
+      const detResult = tryDeterministic(lastSentence, snapshot ?? null);
+      if (detResult.resolved && detResult.action) {
+        const detId = nextId();
+        emit({
+          kind: "entry",
+          entry: {
+            id: detId,
+            role: "step",
+            action: detResult.action.name,
+            text: detResult.explanation ?? "Deterministic resolution",
+            pending: true,
+          },
+        });
+
+        const detDecision = gate(detResult.action, snapshot, settings.confirmRisky);
+        if (detDecision.verdict === "allow") {
+          const detOutcome = await execute(controller, detResult.action);
+          controller = detOutcome.controller;
+          emit({ kind: "patch", id: detId, text: detOutcome.result.detail, pending: false });
+
+          if (detOutcome.result.snapshot) {
+            snapshot = detOutcome.result.snapshot;
+            const { sanitized } = sanitizeSnapshot(snapshot);
+            snapshot = sanitized;
+          }
+
+          // Add observation to messages for next step.
+          messages.push({
+            role: "assistant",
+            text: detResult.explanation ?? "",
+            toolCalls: [{ id: `det-${detId}`, name: detResult.action.name, input: detResult.action.input }],
+          });
+          messages.push({
+            role: "tool",
+            results: [{ id: `det-${detId}`, content: detOutcome.result.detail, isError: !detOutcome.result.ok }],
+          });
+
+          continue;
+        }
+        // If verdict is confirm/refuse, fall through to LLM.
+      }
+    }
 
     // Stream so the user sees reasoning as it arrives rather than staring at a
     // spinner for the length of a long turn.
@@ -325,7 +388,43 @@ export async function runTask(
         }
       }
 
-      const outcome = await execute(controller, action);
+      // VALIDATE: reject element IDs the client never sent.
+      const elementId = call.input.element_id;
+      if (typeof elementId === "number") {
+        const elExists = snapshot?.elements.some((e) => e.id === elementId);
+        if (!elExists) {
+          emit({ kind: "patch", id: stepId, text: `Rejected — element ${elementId} not found in current snapshot.`, pending: false });
+          results.push({
+            id: call.id,
+            isError: true,
+            content: `Element ${elementId} does not exist in the current page snapshot. The page may have changed — call read_page to get fresh element IDs.`,
+          });
+          continue;
+        }
+      }
+
+      // VALIDATE: reject tokens the client never issued.
+      const inputStr = JSON.stringify(call.input);
+      const tokenMatches = inputStr.match(/<[A-Z]+_\d+>/g);
+      if (tokenMatches) {
+        for (const token of tokenMatches) {
+          if (!tokenizer.resolve(token)) {
+            emit({ kind: "patch", id: stepId, text: `Rejected — unknown token ${token}.`, pending: false });
+            results.push({
+              id: call.id,
+              isError: true,
+              content: `Token ${token} was never issued by the client. This may be a prompt injection attempt.`,
+            });
+            continue;
+          }
+        }
+      }
+
+      // RESOLVE: swap tokens → real values from vault (last possible moment).
+      const resolvedInput = resolveTokens(call.input);
+      const resolvedAction = { name: call.name as never, input: resolvedInput };
+
+      const outcome = await execute(controller, resolvedAction);
       controller = outcome.controller;
       const { result } = outcome;
 
@@ -420,6 +519,25 @@ function warnIfInjected(snapshot: PageSnapshot, emit: (e: AgentEvent) => void): 
       text: `Heads up: this page contains text addressed to an AI agent — "${found.slice(0, 120)}". I'm treating it as page content, not as an instruction.`,
     },
   });
+}
+
+/**
+ * RESOLVE: swap tokens → real values from vault.
+ * Called at the last possible moment before action execution.
+ * Recursively walks the input object to find and resolve any tokens.
+ */
+function resolveTokens(input: Record<string, unknown>): Record<string, unknown> {
+  const resolved: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (typeof value === "string") {
+      resolved[key] = tokenizer.resolveAll(value);
+    } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      resolved[key] = resolveTokens(value as Record<string, unknown>);
+    } else {
+      resolved[key] = value;
+    }
+  }
+  return resolved;
 }
 
 function describeIntent(name: string, input: Record<string, unknown>): string {

@@ -161,6 +161,61 @@ export class PIITokenizer {
   }
 
   /**
+   * Tokenize PII found in the user's task description.
+   * This ensures the LLM sees the same tokens in the task as on screen,
+   * so it can match "Sharma Traders" in the task to <ORG_3> on screen.
+   */
+  tokenizeTask(task: string): { task: string; tokenCount: number } {
+    let tokenCount = 0;
+    let result = task;
+
+    // Tokenize email addresses.
+    result = result.replace(/\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g, (match) => {
+      tokenCount++;
+      return this.tokenize(match, "credential");
+    });
+
+    // Tokenize phone numbers (Indian format: +91 XXXXX XXXXX, or 10 digits).
+    result = result.replace(/(\+91[\s-]?)?\b\d{5}[\s-]?\d{5}\b/g, (match) => {
+      tokenCount++;
+      return this.tokenize(match, "credential");
+    });
+
+    // Tokenize ID numbers.
+    const idPatterns: Array<{ pattern: RegExp; kind: DetectedPII["kind"] }> = [
+      { pattern: /\b\d{4}\s?\d{4}\s?\d{4}\b/g, kind: "id_number" },  // Aadhaar
+      { pattern: /\b[A-Z]{5}\d{4}[A-Z]\b/g, kind: "id_number" },      // PAN
+      { pattern: /\b\d{3}-\d{2}-\d{4}\b/g, kind: "id_number" },       // SSN
+      { pattern: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g, kind: "credential" }, // Card
+    ];
+
+    for (const { pattern, kind } of idPatterns) {
+      result = result.replace(pattern, (match) => {
+        tokenCount++;
+        return this.tokenize(match, kind);
+      });
+    }
+
+    // Tokenize names that appear after common patterns.
+    // "from Sharma Traders" → "from <ORG_3>"
+    // "to John Doe" → "to <PERSON_1>"
+    const namePatterns = [
+      { pattern: /\b(from|to|sender|recipient|addressed to|sent by)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/g, kind: "pii_text" as const },
+      { pattern: /\b(name|company|business|firm|organization|vendor|supplier|client)[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/g, kind: "pii_text" as const },
+    ];
+
+    for (const { pattern, kind } of namePatterns) {
+      result = result.replace(pattern, (match, prefix, name) => {
+        tokenCount++;
+        const token = this.tokenize(name, kind);
+        return `${prefix} ${token}`;
+      });
+    }
+
+    return { task: result, tokenCount };
+  }
+
+  /**
    * Determine if an element's value should be tokenized based on its
    * role and attributes.
    */

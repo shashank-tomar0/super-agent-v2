@@ -4,7 +4,7 @@
  * Manifest V3 service workers cannot access DOM APIs, WebGPU, or run
  * long-lived inference. This offscreen document provides the environment for:
  *   1. DOM-guided screenshot redaction (blurring/masking PII regions)
- *   2. Skin-color heuristic face detection
+ *   2. Face detection (Chrome FaceDetector API → skin-color fallback)
  *   3. Canvas-based redaction engine
  *
  * The key insight: instead of trying to detect PII from the image (which
@@ -16,6 +16,30 @@
  */
 
 import type { DetectedPII } from "../background/pii-detector";
+
+// ─── Chrome FaceDetector API (Chrome 100+, Shape Detection API) ─────────────
+
+declare class FaceDetector {
+  constructor(options?: { fastMode?: boolean; maxDetectedFaces?: number });
+  detect(image: ImageBitmap | HTMLCanvasElement): Promise<Array<{
+    boundingBox: { x: number; y: number; width: number; height: number };
+  }>>;
+}
+
+let chromeFaceDetector: FaceDetector | null = null;
+
+async function getChromeFaceDetector(): Promise<FaceDetector | null> {
+  if (chromeFaceDetector) return chromeFaceDetector;
+  try {
+    if (typeof FaceDetector !== "undefined") {
+      chromeFaceDetector = new FaceDetector({ fastMode: true, maxDetectedFaces: 10 });
+      return chromeFaceDetector;
+    }
+  } catch {
+    // Not available in this context.
+  }
+  return null;
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -270,11 +294,40 @@ async function processScreenshot(
     });
   }
 
-  // 2. Face detection via skin-color heuristic.
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const faceRegions = detectFacesBySkinColor(imageData, width, height);
+  // 2. Face detection — try Chrome FaceDetector API first, fallback to skin-color.
+  let faceBoxes: Array<{ x: number; y: number; width: number; height: number; confidence: number }> = [];
 
-  for (const face of faceRegions) {
+  const chromeDetector = await getChromeFaceDetector();
+  if (chromeDetector) {
+    try {
+      const bitmap = await createImageBitmap(await (async () => {
+        const c = new OffscreenCanvas(width, height);
+        c.getContext("2d")!.drawImage(canvas, 0, 0);
+        return c.convertToBlob();
+      })());
+      const faces = await chromeDetector.detect(bitmap);
+      bitmap.close();
+      faceBoxes = faces.map((f) => ({
+        x: f.boundingBox.x,
+        y: f.boundingBox.y,
+        width: f.boundingBox.width,
+        height: f.boundingBox.height,
+        confidence: 0.95,
+      }));
+      console.log(`[VLEE Offscreen] Chrome FaceDetector found ${faceBoxes.length} faces`);
+    } catch {
+      // Fall through to skin-color.
+    }
+  }
+
+  if (faceBoxes.length === 0) {
+    // Fallback: skin-color heuristic.
+    const imageData = ctx.getImageData(0, 0, width, height);
+    faceBoxes = detectFacesBySkinColor(imageData, width, height);
+    console.log(`[VLEE Offscreen] Skin-color heuristic found ${faceBoxes.length} faces`);
+  }
+
+  for (const face of faceBoxes) {
     // Expand face box by 20% for better coverage.
     const expandX = face.width * 0.1;
     const expandY = face.height * 0.1;
@@ -316,7 +369,7 @@ async function processScreenshot(
     reader.readAsDataURL(redactedBlob);
   });
 
-  console.log(`[VLEE Offscreen] Redacted ${allDetections.length} items (${faceRegions.length} faces, ${sensitiveRegions.length} DOM regions) in ${(performance.now() - startTime).toFixed(0)}ms`);
+  console.log(`[VLEE Offscreen] Redacted ${allDetections.length} items (${faceBoxes.length} faces, ${sensitiveRegions.length} DOM regions) in ${(performance.now() - startTime).toFixed(0)}ms`);
 
   return {
     redactedDataUrl,
