@@ -230,33 +230,48 @@ export function lookup(id: number): Element | undefined {
 
 // ─── Sensitive Region Detection ─────────────────────────────────────────────
 
-/** Patterns that identify PII-sensitive elements on screen. */
-const SENSITIVE_SELECTORS = [
-  // Password fields
+/**
+ * High-confidence PII selectors — fields that are ALMOST CERTAINLY sensitive.
+ * These get redacted with solid black mask.
+ */
+const HIGH_CONFIDENCE_SELECTORS = [
   'input[type="password"]',
   'input[autocomplete="current-password"]',
   'input[autocomplete="new-password"]',
-  // Credit card fields
   'input[autocomplete="cc-number"]',
   'input[autocomplete="cc-exp"]',
   'input[autocomplete="cc-csc"]',
+  'input[autocomplete="one-time-code"]',
   'input[name*="card"]',
   'input[name*="credit"]',
   'input[name*="cvv"]',
   'input[name*="cvc"]',
-  // ID fields
   'input[name*="aadhaar"]',
   'input[name*="pan"]',
   'input[name*="ssn"]',
   'input[name*="passport"]',
-  // API keys / secrets
   'input[name*="apikey"]',
   'input[name*="api_key"]',
   'input[name*="secret"]',
-  'input[name*="token"]',
-  // OTP
   'input[name*="otp"]',
-  'input[autocomplete="one-time-code"]',
+].join(",");
+
+/**
+ * All input-capable elements — ANY field that a user might type sensitive
+ * data into. These get redacted with blur (lighter than black mask
+ * since they're not confirmed PII, but still privacy-sensitive).
+ *
+ * Gmail uses contenteditable divs for compose. Google Forms uses
+ * generic inputs. Banking sites use custom components.
+ */
+const ALL_INPUT_SELECTORS = [
+  'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="image"]):not([type="date"])',
+  'textarea',
+  '[contenteditable="true"]',
+  '[contenteditable=""]',
+  '[role="textbox"]',
+  '[role="searchbox"]',
+  '[role="combobox"] input',
 ].join(",");
 
 export interface SensitiveRegion {
@@ -274,17 +289,22 @@ export interface SensitiveRegion {
 /**
  * Finds all sensitive elements on the page and returns their viewport
  * bounding boxes. Used by the service worker to guide screenshot redaction.
+ *
+ * Strategy: redact ALL input-capable fields (they might contain sensitive
+ * data) plus scan visible text for ID number patterns.
  */
 export function getSensitiveRegions(): SensitiveRegion[] {
   const regions: SensitiveRegion[] = [];
+  const processedElements = new Set<Element>();
 
-  // 1. Find PII form fields by CSS selectors.
-  const sensitiveEls = document.querySelectorAll(SENSITIVE_SELECTORS);
-  for (const el of Array.from(sensitiveEls)) {
+  // 1. High-confidence PII fields — solid black mask.
+  const highConfEls = document.querySelectorAll(HIGH_CONFIDENCE_SELECTORS);
+  for (const el of Array.from(highConfEls)) {
     if (!isVisible(el)) continue;
     const rect = el.getBoundingClientRect();
     if (rect.width < 2 || rect.height < 2) continue;
 
+    processedElements.add(el);
     const kind = getSensitiveKind(el);
     regions.push({
       x: Math.round(rect.left),
@@ -295,11 +315,12 @@ export function getSensitiveRegions(): SensitiveRegion[] {
       label: getSensitiveLabel(el, kind),
     });
 
-    // Also redact the associated label (usually to the left/above).
+    // Also redact the associated label.
     const label = findAssociatedLabel(el);
-    if (label) {
+    if (label && !processedElements.has(label)) {
       const lrect = label.getBoundingClientRect();
       if (lrect.width > 0 && lrect.height > 0) {
+        processedElements.add(label);
         regions.push({
           x: Math.round(lrect.left),
           y: Math.round(lrect.top),
@@ -312,12 +333,38 @@ export function getSensitiveRegions(): SensitiveRegion[] {
     }
   }
 
-  // 2. Scan visible text for ID numbers (Aadhaar, PAN, SSN, etc.).
+  // 2. ALL other input fields — blur (not confirmed PII but sensitive).
+  const allInputEls = document.querySelectorAll(ALL_INPUT_SELECTORS);
+  for (const el of Array.from(allInputEls)) {
+    if (processedElements.has(el)) continue; // Already handled as high-confidence.
+    if (!isVisible(el)) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 10 || rect.height < 5) continue; // Skip tiny hidden fields.
+
+    // Skip empty-looking search boxes and nav inputs.
+    const name = (el as HTMLInputElement).name?.toLowerCase() ?? "";
+    const placeholder = (el as HTMLInputElement).placeholder?.toLowerCase() ?? "";
+    const role = el.getAttribute("role")?.toLowerCase() ?? "";
+    if (name === "q" || placeholder.includes("search") || role === "searchbox") continue;
+
+    processedElements.add(el);
+    regions.push({
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      kind: "input_field",
+      label: getSensitiveLabel(el, "input_field"),
+    });
+  }
+
+  // 3. Scan visible text for ID numbers (Aadhaar, PAN, SSN, card numbers).
   const idRegions = findTextRegions([
-    /\b\d{4}\s?\d{4}\s?\d{4}\b/,  // Aadhaar
-    /\b[A-Z]{5}\d{4}[A-Z]\b/,      // PAN
-    /\b\d{3}-\d{2}-\d{4}\b/,       // SSN
+    /\b\d{4}\s?\d{4}\s?\d{4}\b/,           // Aadhaar
+    /\b[A-Z]{5}\d{4}[A-Z]\b/,               // PAN
+    /\b\d{3}-\d{2}-\d{4}\b/,                // SSN
     /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/, // Card numbers
+    /\b[A-Z]{2}\d{6,8}\b/,                   // Passport
   ]);
   regions.push(...idRegions);
 

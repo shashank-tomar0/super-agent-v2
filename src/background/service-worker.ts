@@ -158,10 +158,27 @@ async function getSensitiveRegions(tabId: number): Promise<{
   dpr: number;
 } | null> {
   try {
+    // Ensure content script is injected (may not be if tab predates extension).
+    try {
+      await chrome.tabs.sendMessage(tabId, { kind: "ping" });
+    } catch {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content.js"],
+      });
+      // Wait for content script to initialize.
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
     const result = await chrome.tabs.sendMessage(tabId, { kind: "get-sensitive-regions" }) as any;
-    if (!result?.sensitiveRegions) return null;
+    if (!result?.sensitiveRegions) {
+      console.log("[VLEE] No sensitive regions returned from content script");
+      return null;
+    }
+    console.log(`[VLEE] Content script found ${result.sensitiveRegions.length} sensitive regions, DPR=${result.dpr}`);
     return { regions: result.sensitiveRegions, dpr: result.dpr ?? 1 };
-  } catch {
+  } catch (err) {
+    console.warn("[VLEE] getSensitiveRegions failed:", err);
     return null;
   }
 }

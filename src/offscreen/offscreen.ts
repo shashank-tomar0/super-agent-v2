@@ -239,8 +239,8 @@ async function processScreenshot(
 
     if (rw <= 0 || rh <= 0) continue;
 
-    // Use blur for faces/labels, solid black mask for credentials/IDs.
-    const useBlur = region.kind === "credential_label";
+    // Use blur for faces/labels/input fields, solid black mask for credentials/IDs.
+    const useBlur = region.kind === "credential_label" || region.kind === "input_field";
 
     if (useBlur) {
       ctx.save();
@@ -255,14 +255,15 @@ async function processScreenshot(
       ctx.fillRect(rx, ry, rw, rh);
       // Add a small label showing what was redacted.
       ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-      ctx.font = `bold ${Math.max(9, Math.round(rh * 0.3))}px system-ui, sans-serif`;
+      ctx.font = `bold ${Math.max(9, Math.round(Math.min(rh * 0.3, 12)))}px system-ui, sans-serif`;
       ctx.textBaseline = "middle";
       ctx.textAlign = "center";
-      ctx.fillText(`🔒 ${region.label}`, rx + rw / 2, ry + rh / 2);
+      const label = region.kind === "input_field" ? "🔒 Input" : `🔒 ${region.label}`;
+      ctx.fillText(label, rx + rw / 2, ry + rh / 2);
     }
 
     allDetections.push({
-      kind: region.kind === "credential_label" ? "credential" : region.kind as any,
+      kind: (region.kind === "credential_label" || region.kind === "input_field") ? "credential" : region.kind as any,
       box: { x: region.x, y: region.y, width: region.width, height: region.height },
       confidence: 0.95,
       label: region.label,
