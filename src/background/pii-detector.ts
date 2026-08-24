@@ -226,8 +226,10 @@ export function detectDOMPII(snapshot: {
  */
 export function detectTextPII(text: string): DetectedPII[] {
   const results: DetectedPII[] = [];    for (const { pattern, label } of [...INDIAN_ID_PATTERNS, ...INTERNATIONAL_ID_PATTERNS]) {
+    // matchAll requires the global flag — clone if missing.
     const regex = pattern instanceof RegExp ? pattern : new RegExp(pattern as unknown as string, "gi");
-    const matches = text.matchAll(regex);
+    const globalRegex = regex.global ? regex : new RegExp(regex.source, regex.flags + "g");
+    const matches = text.matchAll(globalRegex);
     for (const match of matches) {
       if (match.index !== undefined) {
         results.push({
