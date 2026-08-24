@@ -227,3 +227,189 @@ export function lookup(id: number): Element | undefined {
   if (!el || !el.isConnected) return undefined;
   return el;
 }
+
+// ─── Sensitive Region Detection ─────────────────────────────────────────────
+
+/** Patterns that identify PII-sensitive elements on screen. */
+const SENSITIVE_SELECTORS = [
+  // Password fields
+  'input[type="password"]',
+  'input[autocomplete="current-password"]',
+  'input[autocomplete="new-password"]',
+  // Credit card fields
+  'input[autocomplete="cc-number"]',
+  'input[autocomplete="cc-exp"]',
+  'input[autocomplete="cc-csc"]',
+  'input[name*="card"]',
+  'input[name*="credit"]',
+  'input[name*="cvv"]',
+  'input[name*="cvc"]',
+  // ID fields
+  'input[name*="aadhaar"]',
+  'input[name*="pan"]',
+  'input[name*="ssn"]',
+  'input[name*="passport"]',
+  // API keys / secrets
+  'input[name*="apikey"]',
+  'input[name*="api_key"]',
+  'input[name*="secret"]',
+  'input[name*="token"]',
+  // OTP
+  'input[name*="otp"]',
+  'input[autocomplete="one-time-code"]',
+].join(",");
+
+export interface SensitiveRegion {
+  /** Bounding box in viewport coordinates. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Type of sensitive content. */
+  kind: string;
+  /** Human-readable label. */
+  label: string;
+}
+
+/**
+ * Finds all sensitive elements on the page and returns their viewport
+ * bounding boxes. Used by the service worker to guide screenshot redaction.
+ */
+export function getSensitiveRegions(): SensitiveRegion[] {
+  const regions: SensitiveRegion[] = [];
+
+  // 1. Find PII form fields by CSS selectors.
+  const sensitiveEls = document.querySelectorAll(SENSITIVE_SELECTORS);
+  for (const el of Array.from(sensitiveEls)) {
+    if (!isVisible(el)) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) continue;
+
+    const kind = getSensitiveKind(el);
+    regions.push({
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      kind,
+      label: getSensitiveLabel(el, kind),
+    });
+
+    // Also redact the associated label (usually to the left/above).
+    const label = findAssociatedLabel(el);
+    if (label) {
+      const lrect = label.getBoundingClientRect();
+      if (lrect.width > 0 && lrect.height > 0) {
+        regions.push({
+          x: Math.round(lrect.left),
+          y: Math.round(lrect.top),
+          width: Math.round(lrect.width),
+          height: Math.round(lrect.height),
+          kind: "credential_label",
+          label: `Label for ${kind}`,
+        });
+      }
+    }
+  }
+
+  // 2. Scan visible text for ID numbers (Aadhaar, PAN, SSN, etc.).
+  const idRegions = findTextRegions([
+    /\b\d{4}\s?\d{4}\s?\d{4}\b/,  // Aadhaar
+    /\b[A-Z]{5}\d{4}[A-Z]\b/,      // PAN
+    /\b\d{3}-\d{2}-\d{4}\b/,       // SSN
+    /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/, // Card numbers
+  ]);
+  regions.push(...idRegions);
+
+  return regions;
+}
+
+function getSensitiveKind(el: Element): string {
+  const input = el as HTMLInputElement;
+  if (input.type === "password") return "password";
+  const ac = input.autocomplete ?? "";
+  if (ac.includes("cc-")) return "credit_card";
+  if (ac.includes("one-time")) return "otp";
+  const name = (input.name ?? "").toLowerCase();
+  if (name.includes("aadhaar") || name.includes("ssn") || name.includes("passport")) return "id_number";
+  if (name.includes("pan")) return "pan_card";
+  if (name.includes("cvv") || name.includes("cvc")) return "cvv";
+  if (name.includes("apikey") || name.includes("api_key") || name.includes("secret") || name.includes("token")) return "api_key";
+  return "credential";
+}
+
+function getSensitiveLabel(el: Element, kind: string): string {
+  const name = (el as HTMLInputElement).name ?? "";
+  const label = findAssociatedLabel(el);
+  const labelText = label?.textContent?.trim() ?? "";
+  return labelText || name || kind;
+}
+
+function findAssociatedLabel(el: Element): HTMLElement | null {
+  // Check for explicit <label for="id">
+  const input = el as HTMLInputElement;
+  if (input.id) {
+    const label = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
+    if (label instanceof HTMLElement) return label;
+  }
+  // Check for wrapping <label>
+  const parent = el.closest("label");
+  if (parent instanceof HTMLElement) return parent;
+  // Check aria-labelledby
+  const labelledBy = el.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const parts = labelledBy.split(/\s+/);
+    for (const id of parts) {
+      const ref = document.getElementById(id);
+      if (ref instanceof HTMLElement) return ref;
+    }
+  }
+  // Check preceding sibling or parent's text.
+  const prev = el.previousElementSibling;
+  if (prev instanceof HTMLElement && prev.textContent?.trim()) return prev;
+  return null;
+}
+
+/**
+ * Find visible text regions matching regex patterns using TreeWalker.
+ * Returns bounding boxes for matching text nodes.
+ */
+function findTextRegions(patterns: RegExp[]): SensitiveRegion[] {
+  const regions: SensitiveRegion[] = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let node: Node | null;
+
+  while ((node = walker.nextNode())) {
+    const text = node.textContent ?? "";
+    if (text.length < 8) continue; // Skip short text.
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match && match.index !== undefined) {
+        // Get the bounding box of the text node.
+        const range = document.createRange();
+        range.setStart(node, match.index);
+        range.setEnd(node, match.index + match[0].length);
+        const rect = range.getBoundingClientRect();
+        range.detach();
+
+        if (rect.width > 0 && rect.height > 0) {
+          // Only add if visible in viewport.
+          if (rect.top < innerHeight && rect.bottom > 0) {
+            regions.push({
+              x: Math.round(rect.left),
+              y: Math.round(rect.top),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+              kind: "id_text",
+              label: `ID number in text: ${match[0].slice(0, 8)}...`,
+            });
+          }
+        }
+        break; // One match per text node is enough.
+      }
+    }
+  }
+
+  return regions;
+}

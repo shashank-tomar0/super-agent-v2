@@ -12,7 +12,7 @@
 
 import type { ContentRequest, ActionResult } from "../shared/types";
 import { act } from "./act";
-import { snapshot } from "./perceive";
+import { snapshot, getSensitiveRegions } from "./perceive";
 
 chrome.runtime.onMessage.addListener(
   (request: ContentRequest, _sender, sendResponse: (r: unknown) => void) => {
@@ -31,12 +31,18 @@ chrome.runtime.onMessage.addListener(
         return true;
 
       case "capture-screenshot":
-        // Screenshot capture is handled by the service worker, not the content
-        // script. If the service worker sends this message here, it's a mistake.
         sendResponse({
           ok: false,
           detail: "Screenshot capture must be handled by the service worker",
         } satisfies ActionResult);
+        return false;
+
+      case "get-sensitive-regions":
+        sendResponse({
+          ok: true,
+          detail: "sensitive-regions",
+          sensitiveRegions: getSensitiveRegions(),
+        } satisfies ActionResult & { sensitiveRegions: ReturnType<typeof getSensitiveRegions> });
         return false;
 
       case "capture-and-act":

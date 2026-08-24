@@ -3,188 +3,312 @@
  *
  * Manifest V3 service workers cannot access DOM APIs, WebGPU, or run
  * long-lived inference. This offscreen document provides the environment for:
- *   1. PII detection on captured screenshots
- *   2. Canvas-based redaction (blur faces, mask credentials)
- *   3. On-device vision model inference via Transformers.js
+ *   1. DOM-guided screenshot redaction (blurring/masking PII regions)
+ *   2. Skin-color heuristic face detection
+ *   3. Canvas-based redaction engine
  *
- * Transformers.js downloads models from Hugging Face at runtime — no need
- * to bundle large ONNX files in the extension package.
+ * The key insight: instead of trying to detect PII from the image (which
+ * requires heavy ML models), we use the DOM to KNOW where sensitive data
+ * is on screen, then redact those exact pixel regions.
  *
- * Communication: the service worker sends messages here via sendMessage.
- * This document processes them and sends results BACK via sendMessage
- * (NOT sendResponse — sendResponse replies to the caller's Promise but
- * does not trigger onMessage listeners, which is what the SW uses).
+ * Communication: service worker sends messages here via sendMessage.
+ * Results are sent back via chrome.runtime.sendMessage (NOT sendResponse).
  */
 
-import { detectFaces } from "../background/pii-detector";
-import { redactToBlob } from "../background/redaction";
+import type { DetectedPII } from "../background/pii-detector";
 
-// ─── Transformers.js Integration ────────────────────────────────────────────
+// ─── Types ──────────────────────────────────────────────────────────────────
 
-let imageClassifier: any = null;
-let objectDetector: any = null;
-let modelsLoaded = false;
-
-const SCREEN_RELEVANT_LABELS = new Set([
-  "monitor", "computer", "laptop", "screen", "web site", "webpage",
-  "notebook", "desktop", "keyboard", "mouse", "printer", "scanner",
-  "cell phone", "mobile phone", "telephone", "dial telephone",
-  "envelope", "newspaper", "book", "notebook", "menu",
-  "wallet", "purse", "handbag", "backpack",
-  "passport", "identity card",
-  "barber shop", "beauty salon",
-  "suit", "dress", "sunglasses",
-]);
-
-async function loadVisionModels(): Promise<void> {
-  if (modelsLoaded) return;
-
-  try {
-    const { pipeline, env } = await import("@huggingface/transformers");
-    env.allowLocalModels = false;
-
-    imageClassifier = await pipeline(
-      "image-classification",
-      "onnx-community/mobilenet-v3-small-300-cls-int8",
-      { device: "wasm" },
-    );
-
-    try {
-      objectDetector = await pipeline(
-        "object-detection",
-        "onnx-community/yolov8n-int8",
-        { device: "wasm" },
-      );
-    } catch {
-      console.warn("[VLEE] Object detection model not loaded, using classification only");
-    }
-
-    modelsLoaded = true;
-    console.log("[VLEE] Vision models loaded successfully");
-  } catch (err) {
-    console.warn("[VLEE] Failed to load vision models:", err);
-  }
-}
-
-// ─── Screen Understanding ───────────────────────────────────────────────────
-
-export interface ScreenClassification {
+interface SensitiveRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  kind: string;
   label: string;
-  score: number;
 }
 
-export interface ObjectDetection {
-  label: string;
-  score: number;
-  box: { xmin: number; ymin: number; xmax: number; ymax: number };
+// ─── Skin-Color Face Detection ──────────────────────────────────────────────
+//
+// A simple but effective heuristic: scan the image for clusters of skin-colored
+// pixels. Not as accurate as a proper face detector, but works in any context
+// without ML model dependencies. Good enough for the privacy pipeline.
+
+/** Check if an RGB pixel is likely skin-colored (works across skin tones). */
+function isSkinColor(r: number, g: number, b: number): boolean {
+  // Combined rule using multiple color spaces for robustness.
+  // Works across diverse skin tones by checking multiple ranges.
+
+  // Rule 1: RGB heuristic (works for most skin tones).
+  const rgbRule =
+    r > 95 && g > 40 && b > 20 &&
+    r > g && r > b &&
+    Math.abs(r - g) > 15 &&
+    r - b > 15;
+
+  // Rule 2: Normalized RGB (handles lighting variation).
+  const sum = r + g + b;
+  if (sum === 0) return false;
+  const nr = r / sum;
+  const ng = g / sum;
+  const nb = b / sum;
+  const normalizedRule =
+    nr > 0.28 && nr < 0.55 &&
+    ng > 0.18 && ng < 0.42 &&
+    nb > 0.08 && nb < 0.32 &&
+    nr > nb;
+
+  return rgbRule || normalizedRule;
 }
 
-export interface VisionResult {
-  classifications: ScreenClassification[];
-  objects: ObjectDetection[];
-  hasScreenContent: boolean;
-  hasPIIObjects: boolean;
-  inferenceTimeMs: number;
-  modelsAvailable: boolean;
-}
+/**
+ * Detect face-like regions using skin-color clustering.
+ * Returns bounding boxes of likely face regions.
+ */
+function detectFacesBySkinColor(
+  imageData: ImageData,
+  canvasWidth: number,
+  canvasHeight: number,
+): Array<{ x: number; y: number; width: number; height: number; confidence: number }> {
+  const { data } = imageData;
+  const blockSize = 12; // Sample every 12 pixels for speed.
+  const minClusterSize = 40; // Minimum skin pixels to count as a face region.
 
-async function runVisionInference(imageBitmap: ImageBitmap): Promise<VisionResult> {
-  const startTime = performance.now();
-
-  if (!modelsLoaded) await loadVisionModels();
-
-  if (!imageClassifier) {
-    return {
-      classifications: [], objects: [], hasScreenContent: false,
-      hasPIIObjects: false, inferenceTimeMs: 0, modelsAvailable: false,
-    };
+  // Build a skin-color mask.
+  const mask = new Uint8Array(canvasWidth * canvasHeight);
+  for (let i = 0; i < mask.length; i++) {
+    const px = i * 4;
+    mask[i] = isSkinColor(data[px], data[px + 1], data[px + 2]) ? 1 : 0;
   }
 
-  try {
-    const canvasForModel = document.createElement("canvas");
-    canvasForModel.width = imageBitmap.width;
-    canvasForModel.height = imageBitmap.height;
-    const modelCtx = canvasForModel.getContext("2d")!;
-    modelCtx.drawImage(imageBitmap, 0, 0);
+  // Find connected skin regions using simple grid-based clustering.
+  const regions: Array<{ x: number; y: number; width: number; height: number; confidence: number }> = [];
+  const visited = new Uint8Array(mask.length);
 
-    const classifications: ScreenClassification[] = await imageClassifier(canvasForModel, { topk: 10 });
+  for (let by = 0; by < canvasHeight; by += blockSize) {
+    for (let bx = 0; bx < canvasWidth; bx += blockSize) {
+      const idx = by * canvasWidth + bx;
+      if (!mask[idx] || visited[idx]) continue;
 
-    const hasScreenContent = classifications.some((c: ScreenClassification) =>
-      SCREEN_RELEVANT_LABELS.has(c.label.toLowerCase()),
-    );
-    const hasPIIObjects = classifications.some((c: ScreenClassification) =>
-      ["passport", "identity card", "wallet", "purse", "handbag"].includes(c.label.toLowerCase()),
-    );
+      // BFS to find connected skin region.
+      let minX = bx, maxX = bx, minY = by, maxY = by;
+      let count = 0;
+      const queue = [idx];
 
-    let objects: ObjectDetection[] = [];
-    if (objectDetector) {
-      try {
-        objects = await objectDetector(canvasForModel, { threshold: 0.3, percentage: true });
-      } catch { /* optional */ }
-    }
+      while (queue.length > 0 && count < 2000) {
+        const ci = queue.pop()!;
+        if (visited[ci]) continue;
+        visited[ci] = 1;
 
-    return {
-      classifications, objects, hasScreenContent, hasPIIObjects,
-      inferenceTimeMs: performance.now() - startTime, modelsAvailable: true,
-    };
-  } catch (err) {
-    console.warn("[VLEE] Vision inference failed:", err);
-    return {
-      classifications: [], objects: [], hasScreenContent: false,
-      hasPIIObjects: false, inferenceTimeMs: performance.now() - startTime,
-      modelsAvailable: false,
-    };
-  }
-}
+        const cx = ci % canvasWidth;
+        const cy = Math.floor(ci / canvasWidth);
+        minX = Math.min(minX, cx);
+        maxX = Math.max(maxX, cx);
+        minY = Math.min(minY, cy);
+        maxY = Math.max(maxY, cy);
+        count++;
 
-// ─── Screenshot Processing ──────────────────────────────────────────────────
+        // Check neighbors (4-connected).
+        for (const [dx, dy] of [[0, -blockSize], [0, blockSize], [-blockSize, 0], [blockSize, 0]]) {
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (nx < 0 || nx >= canvasWidth || ny < 0 || ny >= canvasHeight) continue;
+          const ni = ny * canvasWidth + nx;
+          if (mask[ni] && !visited[ni]) queue.push(ni);
+        }
+      }
 
-async function processScreenshot(dataUrl: string, width: number, height: number) {
-  const startTime = performance.now();
+      if (count >= minClusterSize) {
+        const regionW = maxX - minX;
+        const regionH = maxY - minY;
+        const aspectRatio = regionW / regionH;
 
-  const response = await fetch(dataUrl);
-  const blob = await response.blob();
-  const imageBitmap = await createImageBitmap(blob);
-
-  const faceDetections = await detectFaces(imageBitmap, width, height);
-  const vision = await runVisionInference(imageBitmap);
-
-  const allDetections = [...faceDetections];
-
-  if (vision.objects) {
-    for (const obj of vision.objects) {
-      if (["person", "face", "passport", "id card", "credit card"].some((k) =>
-        obj.label.toLowerCase().includes(k),
-      )) {
-        allDetections.push({
-          kind: "face",
-          box: {
-            x: Math.round(obj.box.xmin * width),
-            y: Math.round(obj.box.ymin * height),
-            width: Math.round((obj.box.xmax - obj.box.xmin) * width),
-            height: Math.round((obj.box.ymax - obj.box.ymin) * height),
-          },
-          confidence: obj.score,
-          label: `Object: ${obj.label}`,
-        });
+        // Faces are roughly 1:1 to 1:1.5 aspect ratio.
+        if (aspectRatio > 0.5 && aspectRatio < 2.0 && regionW > 20 && regionH > 20) {
+          regions.push({
+            x: minX,
+            y: minY,
+            width: regionW,
+            height: regionH,
+            confidence: Math.min(0.9, count / 200),
+          });
+        }
       }
     }
   }
 
-  const redactedBlob = await redactToBlob(imageBitmap, allDetections, {
-    blurFaces: true,
-    maskCredentials: true,
-    showLabels: false,
-    blurRadius: 20,
-  });
+  // Merge overlapping regions.
+  return mergeOverlappingRegions(regions);
+}
+
+function mergeOverlappingRegions(
+  regions: Array<{ x: number; y: number; width: number; height: number; confidence: number }>,
+): Array<{ x: number; y: number; width: number; height: number; confidence: number }> {
+  if (regions.length <= 1) return regions;
+
+  const merged: typeof regions = [];
+  const used = new Set<number>();
+
+  for (let i = 0; i < regions.length; i++) {
+    if (used.has(i)) continue;
+    let best = regions[i];
+    used.add(i);
+
+    for (let j = i + 1; j < regions.length; j++) {
+      if (used.has(j)) continue;
+      if (regionsOverlap(best, regions[j])) {
+        best = mergeRects(best, regions[j]);
+        used.add(j);
+      }
+    }
+
+    merged.push(best);
+  }
+
+  return merged;
+}
+
+function regionsOverlap(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): boolean {
+  return !(a.x + a.width < b.x || b.x + b.width < a.x || a.y + a.height < b.y || b.y + b.height < a.y);
+}
+
+function mergeRects(
+  a: { x: number; y: number; width: number; height: number; confidence: number },
+  b: { x: number; y: number; width: number; height: number; confidence: number },
+) {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return {
+    x,
+    y,
+    width: Math.max(a.x + a.width, b.x + b.width) - x,
+    height: Math.max(a.y + a.height, b.y + b.height) - y,
+    confidence: Math.max(a.confidence, b.confidence),
+  };
+}
+
+// ─── Screenshot Processing ──────────────────────────────────────────────────
+
+async function processScreenshot(
+  dataUrl: string,
+  width: number,
+  height: number,
+  sensitiveRegions: SensitiveRegion[] = [],
+): Promise<{
+  redactedDataUrl: string;
+  detections: Array<{
+    kind: string;
+    box?: { x: number; y: number; width: number; height: number };
+    confidence: number;
+    label: string;
+  }>;
+  redactedCount: number;
+  processingTimeMs: number;
+}> {
+  const startTime = performance.now();
+
+  // Load the screenshot into an ImageBitmap.
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  const imageBitmap = await createImageBitmap(blob);
+
+  // Create canvas for redaction.
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(imageBitmap, 0, 0);
+  imageBitmap.close();
+
+  const allDetections: DetectedPII[] = [];
+
+  // 1. DOM-guided redaction — redact known sensitive regions.
+  for (const region of sensitiveRegions) {
+    // Expand region by 4px padding for safety.
+    const padding = 4;
+    const rx = Math.max(0, region.x - padding);
+    const ry = Math.max(0, region.y - padding);
+    const rw = Math.min(width - rx, region.width + padding * 2);
+    const rh = Math.min(height - ry, region.height + padding * 2);
+
+    if (rw <= 0 || rh <= 0) continue;
+
+    // Use blur for faces/labels, solid black mask for credentials/IDs.
+    const useBlur = region.kind === "credential_label";
+
+    if (useBlur) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(rx, ry, rw, rh);
+      ctx.clip();
+      ctx.filter = "blur(12px)";
+      ctx.drawImage(canvas, rx, ry, rw, rh, rx, ry, rw, rh);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(rx, ry, rw, rh);
+      // Add a small label showing what was redacted.
+      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+      ctx.font = `bold ${Math.max(9, Math.round(rh * 0.3))}px system-ui, sans-serif`;
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+      ctx.fillText(`🔒 ${region.label}`, rx + rw / 2, ry + rh / 2);
+    }
+
+    allDetections.push({
+      kind: region.kind === "credential_label" ? "credential" : region.kind as any,
+      box: { x: region.x, y: region.y, width: region.width, height: region.height },
+      confidence: 0.95,
+      label: region.label,
+    });
+  }
+
+  // 2. Face detection via skin-color heuristic.
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const faceRegions = detectFacesBySkinColor(imageData, width, height);
+
+  for (const face of faceRegions) {
+    // Expand face box by 20% for better coverage.
+    const expandX = face.width * 0.1;
+    const expandY = face.height * 0.1;
+    const rx = Math.max(0, Math.round(face.x - expandX));
+    const ry = Math.max(0, Math.round(face.y - expandY));
+    const rw = Math.min(width - rx, Math.round(face.width + expandX * 2));
+    const rh = Math.min(height - ry, Math.round(face.height + expandY * 2));
+
+    if (rw > 10 && rh > 10) {
+      // Apply Gaussian blur to face region.
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(rx, ry, rw, rh);
+      ctx.clip();
+      ctx.filter = "blur(20px)";
+      ctx.drawImage(canvas, rx, ry, rw, rh, rx, ry, rw, rh);
+      ctx.restore();
+
+      allDetections.push({
+        kind: "face",
+        box: {
+          x: face.x / width,
+          y: face.y / height,
+          width: face.width / width,
+          height: face.height / height,
+        },
+        confidence: face.confidence,
+        label: "Face detected",
+      });
+    }
+  }
+
+  // 3. Convert to Blob.
+  const redactedBlob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
 
   const reader = new FileReader();
   const redactedDataUrl = await new Promise<string>((resolve) => {
     reader.onload = () => resolve(reader.result as string);
     reader.readAsDataURL(redactedBlob);
   });
-
-  imageBitmap.close();
 
   return {
     redactedDataUrl,
@@ -196,28 +320,20 @@ async function processScreenshot(dataUrl: string, width: number, height: number)
     })),
     redactedCount: allDetections.length,
     processingTimeMs: performance.now() - startTime,
-    vision,
   };
 }
 
-// ─── Preload Models on Init ─────────────────────────────────────────────────
-
-loadVisionModels();
-
 // ─── Message Handler ────────────────────────────────────────────────────────
-//
-// CRITICAL: We use chrome.runtime.sendMessage to send results back to the
-// service worker, NOT sendResponse. Here's why:
-//
-// - sendResponse() replies to the original sendMessage() call's Promise.
-//   The service worker's onMessage listener does NOT see it.
-// - chrome.runtime.sendMessage() sends a NEW message that triggers
-//   onMessage listeners, which is how the service worker receives results.
-//
 
 chrome.runtime.onMessage.addListener(
   (
-    message: { type: string; dataUrl?: string; width?: number; height?: number },
+    message: {
+      type: string;
+      dataUrl?: string;
+      width?: number;
+      height?: number;
+      sensitiveRegions?: SensitiveRegion[];
+    },
     _sender: chrome.runtime.MessageSender,
     sendResponse: (response: any) => void,
   ) => {
@@ -227,7 +343,12 @@ chrome.runtime.onMessage.addListener(
       message.width &&
       message.height
     ) {
-      processScreenshot(message.dataUrl, message.width, message.height)
+      processScreenshot(
+        message.dataUrl,
+        message.width,
+        message.height,
+        message.sensitiveRegions ?? [],
+      )
         .then((result) => {
           // Send result back via sendMessage, NOT sendResponse.
           chrome.runtime.sendMessage({
@@ -243,31 +364,11 @@ chrome.runtime.onMessage.addListener(
           });
           sendResponse({ received: true, error: error.message });
         });
-      return true; // keep channel open for sendResponse ack
-    }
-
-    if (message.type === "load-vision-model") {
-      loadVisionModels().then(() => {
-        chrome.runtime.sendMessage({
-          type: "vision-model-loaded",
-          loaded: modelsLoaded,
-        });
-        sendResponse({ received: true });
-      });
       return true;
-    }
-
-    if (message.type === "vision-status") {
-      sendResponse({
-        modelsLoaded,
-        hasClassifier: !!imageClassifier,
-        hasDetector: !!objectDetector,
-      });
-      return false;
     }
 
     return false;
   },
 );
 
-console.log("[VLEE] Offscreen document initialized — loading vision models...");
+console.log("[VLEE] Offscreen document initialized — DOM-guided privacy pipeline ready.");

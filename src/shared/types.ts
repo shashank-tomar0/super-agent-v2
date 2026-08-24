@@ -85,7 +85,8 @@ export type ContentRequest =
   | { kind: "act"; action: AgentAction }
   | { kind: "ping" }
   | { kind: "capture-screenshot" }
-  | { kind: "capture-and-act"; action: AgentAction };
+  | { kind: "capture-and-act"; action: AgentAction }
+  | { kind: "get-sensitive-regions" };
 
 /** A rendered entry in the side panel transcript. */
 export interface TranscriptEntry {

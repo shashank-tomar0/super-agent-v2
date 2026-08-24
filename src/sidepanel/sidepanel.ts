@@ -216,7 +216,8 @@ chrome.runtime.onMessage.addListener((event: AgentEvent) => {
           // Streamed prose arrives as deltas.
           node.textContent = (node.textContent ?? "") + event.text;
         } else if (node.classList.contains("step")) {
-          node.querySelector(".detail")!.textContent = event.text;
+          const detail = node.querySelector(".detail");
+          if (detail) detail.textContent = event.text;
         } else {
           node.textContent = event.text;
         }

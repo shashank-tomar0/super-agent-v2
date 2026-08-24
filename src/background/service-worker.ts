@@ -107,6 +107,10 @@ async function processScreenshot(
   dataUrl: string,
   width: number,
   height: number,
+  sensitiveRegions: Array<{
+    x: number; y: number; width: number; height: number;
+    kind: string; label: string;
+  }> = [],
 ): Promise<ProcessedScreenshotResult> {
   await ensureOffscreenDocument();
 
@@ -132,14 +136,31 @@ async function processScreenshot(
     };
     chrome.runtime.onMessage.addListener(listener);
 
-    // Send the screenshot to the offscreen document for processing.
+    // Send the screenshot + sensitive regions to the offscreen document.
     chrome.runtime.sendMessage({
       type: "process-screenshot",
       dataUrl,
       width,
       height,
+      sensitiveRegions,
     });
   });
+}
+
+/**
+ * Get sensitive element positions from the content script.
+ * Returns bounding boxes of password fields, credit cards, ID numbers, etc.
+ */
+async function getSensitiveRegions(tabId: number): Promise<Array<{
+  x: number; y: number; width: number; height: number;
+  kind: string; label: string;
+}> | null> {
+  try {
+    const result = await chrome.tabs.sendMessage(tabId, { kind: "get-sensitive-regions" }) as any;
+    return result?.sensitiveRegions ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -153,7 +174,13 @@ export async function captureAndProcessScreenshot(): Promise<{
   const captured = await captureVisibleTab();
   if (!captured) return null;
 
-  const processed = await processScreenshot(captured.dataUrl, captured.width, captured.height);
+  // Get sensitive regions from the content script.
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const sensitiveRegions = tab?.id ? await getSensitiveRegions(tab.id) : null;
+
+  const processed = await processScreenshot(
+    captured.dataUrl, captured.width, captured.height, sensitiveRegions ?? [],
+  );
   return { original: captured.dataUrl, processed };
 }
 
