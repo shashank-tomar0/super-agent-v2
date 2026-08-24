@@ -75,7 +75,8 @@ function render(entry: TranscriptEntry): void {
   }
 
   if (entry.role === "step") {
-    node.querySelector(".glyph")!.textContent = GLYPHS[entry.action ?? ""] ?? "•";
+    const glyph = node.querySelector(".glyph");
+    if (glyph) glyph.textContent = GLYPHS[entry.action ?? ""] ?? "•";
     const detail = node.querySelector(".detail");
     if (detail) detail.textContent = entry.text;
     node.classList.toggle("pending", entry.pending === true);
@@ -87,11 +88,11 @@ function render(entry: TranscriptEntry): void {
 }
 
 function setRunning(running: boolean): void {
-  statusDot.classList.toggle("running", running);
-  statusText.textContent = running ? "RUNNING" : "IDLE";
-  runBtn.classList.toggle("hidden", running);
-  stopBtn.classList.toggle("hidden", !running);
-  taskInput.disabled = running;
+  statusDot?.classList.toggle("running", running);
+  if (statusText) statusText.textContent = running ? "RUNNING" : "IDLE";
+  runBtn?.classList.toggle("hidden", running);
+  stopBtn?.classList.toggle("hidden", !running);
+  if (taskInput) taskInput.disabled = running;
 }
 
 // ─── Privacy Audit Rendering ───────────────────────────────────────────────

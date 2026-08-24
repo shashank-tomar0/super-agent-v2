@@ -1,11 +1,10 @@
 /**
  * Ollama Planner
  *
- * Uses Ollama's native /api/chat endpoint instead of the OpenAI-compatible
- * /v1/ wrapper. The native API is more reliable, supports tool calling
- * properly, and doesn't have the 403/405 issues the OpenAI client causes.
- *
- * Ollama native API: POST http://localhost:11434/api/chat
+ * Uses Ollama's native /api/chat endpoint with:
+ * - 60-second timeout per request (prevents hanging)
+ * - Tool-calling fallback (retry without tools if model doesn't support them)
+ * - Robust NDJSON streaming parser
  */
 
 import type {
@@ -13,7 +12,6 @@ import type {
   Planner,
   PlannerRequest,
   PlannerTurn,
-  StopReason,
   ToolSpec,
 } from "./types";
 import { PlannerError, parseArguments } from "./types";
@@ -103,28 +101,131 @@ function toOllamaTools(tools: ToolSpec[]): OllamaTool[] {
   }));
 }
 
-function toStopReason(
-  hasToolCalls: boolean,
-): StopReason {
-  return hasToolCalls ? "tool_use" : "end_turn";
+// ─── Streaming Parser ──────────────────────────────────────────────────────
+
+const REQUEST_TIMEOUT_MS = 60_000;
+const CHUNK_TIMEOUT_MS = 15_000;
+
+async function streamChat(
+  baseUrl: string,
+  body: OllamaChatRequest,
+  signal: AbortSignal,
+  onText: (delta: string) => void,
+): Promise<{ text: string; toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  // Combine user abort with our timeout.
+  const onAbort = () => controller.abort();
+  signal.addEventListener("abort", onAbort);
+
+  try {
+    const response = await fetch(`${baseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new PlannerError(
+        `Ollama returned ${response.status}: ${text || response.statusText}`,
+      );
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new PlannerError("Ollama returned no response body.");
+
+    let text = "";
+    const partials = new Map<number, { id: string; name: string; args: string }>();
+    let done = false;
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+      while (!done) {
+        // Add per-chunk timeout to detect stuck streams.
+        const chunkPromise = reader.read();
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("Stream chunk timeout")), CHUNK_TIMEOUT_MS);
+        });
+
+        const result = await Promise.race([chunkPromise, timeoutPromise]) as {
+          value?: Uint8Array;
+          done: boolean;
+        };
+
+        if (result.done) break;
+        if (!result.value) continue;
+
+        buffer += decoder.decode(result.value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+
+          let parsed: any;
+          try {
+            parsed = JSON.parse(line);
+          } catch {
+            continue;
+          }
+
+          if (parsed.done) {
+            done = true;
+            break;
+          }
+
+          const delta = parsed.message;
+          if (!delta) continue;
+
+          if (delta.content) {
+            text += delta.content;
+            onText(delta.content);
+          }
+
+          if (delta.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              const index = tc.index ?? partials.size;
+              const existing = partials.get(index) ?? {
+                id: `call_${index}`,
+                name: "",
+                args: "",
+              };
+              if (tc.function?.name) existing.name = tc.function.name;
+              if (tc.function?.arguments) existing.args += tc.function.arguments;
+              partials.set(index, existing);
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    const toolCalls = Array.from(partials.entries())
+      .sort(([a], [b]) => a - b)
+      .filter(([, call]) => call.name)
+      .map(([index, call]) => ({
+        id: call.id || `call_${index}`,
+        name: call.name,
+        input: parseArguments(call.args),
+      }));
+
+    return { text, toolCalls };
+  } finally {
+    clearTimeout(timeout);
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 // ─── Planner Factory ───────────────────────────────────────────────────────
 
 export function createOllamaPlanner(model: string): Planner {
   const baseUrl = "http://localhost:11434";
-
-  async function chat(
-    body: OllamaChatRequest,
-    signal: AbortSignal,
-  ): Promise<Response> {
-    return fetch(`${baseUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    });
-  }
 
   return {
     label: `Ollama (Local) ${model}`,
@@ -136,136 +237,75 @@ export function createOllamaPlanner(model: string): Planner {
       signal,
       onText,
     }: PlannerRequest): Promise<PlannerTurn> {
-      const body: OllamaChatRequest = {
+      const ollamaMessages = toOllamaMessages(system, messages);
+
+      // Try with tools first.
+      let body: OllamaChatRequest = {
         model,
-        messages: toOllamaMessages(system, messages),
+        messages: ollamaMessages,
         tools: toOllamaTools(tools),
         stream: true,
       };
 
-      let response: Response;
       try {
-        response = await chat(body, signal);
+        const result = await streamChat(baseUrl, body, signal, onText);
+        return {
+          text: result.text,
+          toolCalls: result.toolCalls,
+          stopReason: result.toolCalls.length > 0 ? "tool_use" : "end_turn",
+        };
       } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") {
+        // If it's an abort, re-throw as-is.
+        if (error instanceof Error && error.name === "AbortError") throw error;
+
+        // If it's a PlannerError from HTTP status, check if we should retry without tools.
+        if (error instanceof PlannerError) {
+          const msg = error.message;
+
+          // 403 = CORS issue — retry without tools.
+          if (msg.includes("403")) {
+            console.warn("[VLESS] Ollama 403 with tools, retrying without tools.");
+            const bodyNoTools: OllamaChatRequest = { ...body, tools: undefined };
+            const result = await streamChat(baseUrl, bodyNoTools, signal, onText);
+            return {
+              text: result.text,
+              toolCalls: result.toolCalls,
+              stopReason: result.toolCalls.length > 0 ? "tool_use" : "end_turn",
+            };
+          }
+
+          // Other HTTP errors — show with CORS hint.
+          if (msg.includes("403") || msg.includes("CORS")) {
+            throw new PlannerError(
+              `Ollama returned 403 Forbidden. This is a CORS issue.\n\n` +
+                `Fix: Stop Ollama, set env var, restart:\n` +
+                `  taskkill /F /IM ollama.exe\n` +
+                `  set OLLAMA_ORIGINS=chrome-extension://*\n` +
+                `  ollama serve`,
+            );
+          }
+
           throw error;
         }
-        throw new PlannerError(
-          `Cannot connect to Ollama at ${baseUrl}. Is Ollama running? ` +
-            `Run "ollama serve" to start it. If on Windows, run:\n` +
-            `  set OLLAMA_ORIGINS=chrome-extension://*\n` +
-            `  ollama serve`,
-        );
-      }
 
-      // If 403 Forbidden, it's likely a CORS issue — browser extensions need
-      // OLLAMA_ORIGINS set. Try again without tools as a fallback.
-      if (response.status === 403) {
-        const bodyNoTools: OllamaChatRequest = { ...body, tools: undefined };
-        try {
-          response = await chat(bodyNoTools, signal);
-        } catch {
+        // Stream timeout or connection error.
+        if (error instanceof Error && error.message.includes("timeout")) {
           throw new PlannerError(
-            `Ollama returned 403 Forbidden. This is a CORS issue. ` +
-              `Run this in your terminal, then restart Ollama:\n\n` +
-              `  set OLLAMA_ORIGINS=chrome-extension://*\n` +
-              `  ollama serve\n\n` +
-              `Or on PowerShell:\n` +
-              `  $env:OLLAMA_ORIGINS = \"chrome-extension://*\"\n` +
-              `  ollama serve`,
+            `Ollama timed out after ${REQUEST_TIMEOUT_MS / 1000}s. ` +
+              `The model "${model}" may be too slow. Try a smaller model or check if Ollama is running.`,
           );
         }
-        // If it worked without tools, log a warning but continue.
-        console.warn("[VLESS] Ollama 403 with tools, retrying without tools.");
-      }
 
-      if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        throw new PlannerError(
-          `Ollama returned ${response.status}: ${text || response.statusText}. ` +
-            `Make sure model \"${model}\" is pulled (ollama pull ${model}).`,
-        );
-      }
-
-      // Parse streaming NDJSON response.
-      let text = "";
-      const partials = new Map<number, { id: string; name: string; args: string }>();
-      let done = false;
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new PlannerError("Ollama returned no response body.");
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      try {
-        while (!done) {
-          const { value, done: streamDone } = await reader.read();
-          if (streamDone) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            if (!line.trim()) continue;
-
-            let parsed: any;
-            try {
-              parsed = JSON.parse(line);
-            } catch {
-              continue;
-            }
-
-            // Check if streaming is done.
-            if (parsed.done) {
-              done = true;
-              break;
-            }
-
-            const delta = parsed.message;
-            if (!delta) continue;
-
-            // Accumulate text content.
-            if (delta.content) {
-              text += delta.content;
-              onText(delta.content);
-            }
-
-            // Accumulate tool calls.
-            if (delta.tool_calls) {
-              for (const tc of delta.tool_calls) {
-                const index = tc.index ?? 0;
-                const existing = partials.get(index) ?? {
-                  id: `call_${index}`,
-                  name: "",
-                  args: "",
-                };
-                if (tc.function?.name) existing.name = tc.function.name;
-                if (tc.function?.arguments) existing.args += tc.function.arguments;
-                partials.set(index, existing);
-              }
-            }
-          }
+        // Connection refused.
+        if (error instanceof TypeError && error.message.includes("fetch")) {
+          throw new PlannerError(
+            `Cannot connect to Ollama at ${baseUrl}. Is Ollama running?\n` +
+              `Run: ollama serve`,
+          );
         }
-      } finally {
-        reader.releaseLock();
+
+        throw error;
       }
-
-      const toolCalls = Array.from(partials.entries())
-        .sort(([a], [b]) => a - b)
-        .filter(([, call]) => call.name)
-        .map(([index, call]) => ({
-          id: call.id || `call_${index}`,
-          name: call.name,
-          input: parseArguments(call.args),
-        }));
-
-      return {
-        text,
-        toolCalls,
-        stopReason: toStopReason(toolCalls.length > 0),
-      };
     },
   };
 }
