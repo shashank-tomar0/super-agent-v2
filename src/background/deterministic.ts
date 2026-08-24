@@ -108,11 +108,29 @@ export function tryDeterministic(
   }
 
   // ── Navigate ──
+  // Only match simple "go to X" where X is a URL or domain, NOT a multi-step
+  // task like "open youtube and search for...". The captured text must look
+  // like a real URL/domain with no additional instructions.
   const navMatch = lower.match(
     /^(?:go to|open|navigate to|visit)\s+(.+)$/i,
   );
   if (navMatch) {
-    const url = navMatch[1].trim();
+    const raw = navMatch[1].trim();
+
+    // Reject if the URL contains multi-step connectors — this is a complex
+    // task that the LLM should handle, not the deterministic planner.
+    const hasMultiStep = /\b(and|then|after|before|next|search|find|click|type|fill|read|play|watch|submit|send|post)\b/.test(raw);
+    if (hasMultiStep) return { resolved: false };
+
+    // Validate: must look like a URL or domain name.
+    const isUrl = /^(https?:\/\/|www\.|[\w-]+\.[\w.-]+(?:\/\S*)?$)/.test(raw);
+    const isKnownDomain = /^(youtube|google|github|twitter|reddit|facebook|instagram|linkedin|amazon|netflix|spotify|wikipedia|stackoverflow|gmail|outlook|yahoo|bing|discord|slack|notion|figma|linear|vercel|netlify)(\.com|\.org|\.io)?$/i.test(raw);
+
+    if (!isUrl && !isKnownDomain) return { resolved: false };
+
+    // Normalize: add https:// if no protocol.
+    const url = /^(https?:\/\/|www\.)/.test(raw) ? raw : `https://${raw}`;
+
     return {
       resolved: true,
       action: { name: "navigate", input: { url, reason: `Deterministic: navigate to "${url.slice(0, 50)}"` } },

@@ -10,6 +10,16 @@ When a click does not do what you expected, do not immediately repeat it. Read t
 
 If the same approach fails twice, change the approach. Try a different element, a different route to the same place, or a direct URL.
 
+## Multi-step tasks
+
+If the user gives you a compound task like "go to YouTube, search for X, and play the first video", break it into sequential steps:
+1. First, navigate to the website using navigate with a proper URL (https://youtube.com). Never put the entire task into a search engine.
+2. On the destination page, use read_page to find the search box, then type the query and press Enter.
+3. After pressing Enter, read_page again — the page has changed and old element ids are gone. The new page contains search results.
+4. Click the first search result. Prefer clicking the video title link (a link whose text is the video title) over duration text, view counts, or channel names. If you see a list of results, click the title of the first one.
+
+When navigating, always use a real URL (https://youtube.com, https://google.com). When clicking results, always click the main content link (title, headline, heading), not metadata like "8:44", "1.2K views", or channel names.
+
 ## Finishing
 
 When the task is done, stop calling tools and reply in plain prose: what you did, and the answer or result the user wanted. Be specific and quote what you actually saw on the page — never describe a result you did not observe.

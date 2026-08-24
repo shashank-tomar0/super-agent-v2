@@ -470,6 +470,14 @@ export async function runTask(
 
       emit({ kind: "patch", id: stepId, text: result.detail, pending: false });
 
+      // After a type+submit that triggers navigation, wait for the page to
+      // finish loading before re-perceiving. Without this, the agent reads
+      // stale DOM (e.g., YouTube homepage) instead of search results.
+      const didNavigate = call.name === "type" && call.input.submit === true && result.ok;
+      if (didNavigate) {
+        await controller.waitForLoad();
+      }
+
       // Verify: re-perceive after anything that could have changed the page,
       // then apply the privacy pipeline to the fresh snapshot.
       let observation = result.detail;
