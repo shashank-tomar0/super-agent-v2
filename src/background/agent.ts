@@ -243,16 +243,51 @@ export async function runTask(
 
   if (snapshot) warnIfInjected(snapshot, emit);
 
+  // ── Loop detection: track recent actions to break out of stuck states ──
+  const recentActions: Array<{ name: string; input: string }> = [];
+  const LOOP_THRESHOLD = 3;
+  const LOOP_WINDOW = 5;
+
+  function recordAction(name: string, input: Record<string, unknown>): void {
+    recentActions.push({ name, input: JSON.stringify(input) });
+    if (recentActions.length > LOOP_WINDOW) recentActions.shift();
+  }
+
+  function isLooping(): boolean {
+    if (recentActions.length < LOOP_THRESHOLD) return false;
+    const last = recentActions[recentActions.length - 1];
+    let count = 0;
+    for (let i = recentActions.length - 1; i >= 0; i--) {
+      if (recentActions[i].name === last.name && recentActions[i].input === last.input) {
+        count++;
+      } else break;
+    }
+    return count >= LOOP_THRESHOLD;
+  }
+
   for (let step = 0; step < settings.maxSteps; step++) {
     if (signal.aborted) return;
 
-    // Try deterministic resolution first (skip LLM for simple tasks).
-    // The architecture diagram says: "deterministic planner can do it?"
-    if (step > 0) {
-      const taskText = messages.filter((m) => m.role === "user").pop()?.content ?? task;
-      const lastSentence = taskText.split("\n").filter((l) => l.startsWith("Task:")).pop()?.slice(6) ?? task;
-      const detResult = tryDeterministic(lastSentence, snapshot ?? null);
+    // Loop detection — if the agent is stuck repeating the same action, break.
+    if (isLooping()) {
+      emit({
+        kind: "entry",
+        entry: {
+          id: nextId(),
+          role: "error",
+          text: `Loop detected: repeated "${recentActions[recentActions.length - 1].name}" ${LOOP_THRESHOLD} times. Stopping to prevent infinite loop. The page may need manual interaction.`,
+        },
+      });
+      return;
+    }
+
+    // Deterministic planner: only on step 0 for simple one-shot tasks.
+    // Multi-step tasks should be driven by the LLM which tracks its own progress.
+    if (step === 0) {
+      const detResult = tryDeterministic(task, snapshot ?? null);
       if (detResult.resolved && detResult.action) {
+        // Only use deterministic for non-navigate actions on step 0.
+        // Navigate on step 0 is fine — the user explicitly said "go to X".
         const detId = nextId();
         emit({
           kind: "entry",
@@ -267,6 +302,7 @@ export async function runTask(
 
         const detDecision = gate(detResult.action, snapshot, settings.confirmRisky);
         if (detDecision.verdict === "allow") {
+          recordAction(detResult.action.name, detResult.action.input);
           const detOutcome = await execute(controller, detResult.action);
           controller = detOutcome.controller;
           emit({ kind: "patch", id: detId, text: detOutcome.result.detail, pending: false });
@@ -427,6 +463,7 @@ export async function runTask(
       const resolvedInput = resolveTokens(call.input);
       const resolvedAction = { name: call.name as never, input: resolvedInput };
 
+      recordAction(call.name, call.input);
       const outcome = await execute(controller, resolvedAction);
       controller = outcome.controller;
       const { result } = outcome;
