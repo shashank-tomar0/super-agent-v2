@@ -1,6 +1,7 @@
 import type { Settings } from "../../shared/types";
 import { createAnthropicPlanner } from "./anthropic";
 import { createOpenAIPlanner } from "./openai";
+import { createOllamaPlanner } from "./ollama";
 import type { Planner } from "./types";
 import { PlannerError } from "./types";
 
@@ -14,9 +15,9 @@ export function createPlanner(settings: Settings): Planner {
     throw new PlannerError(`No model chosen for ${provider}. Pick one in the extension options.`);
   }
 
-  // Ollama runs locally — no API key required.
+  // Ollama runs locally — uses native API, no API key required.
   if (provider === "ollama") {
-    return createOpenAIPlanner("ollama", "ollama", model);
+    return createOllamaPlanner(model);
   }
 
   if (!apiKey) {
