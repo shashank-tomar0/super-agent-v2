@@ -37,7 +37,7 @@ function atBottom(): boolean {
 
 function updatePerceptionCount() {
   perceptionCount++;
-  perceptionCounter.textContent = `PERCEPTION N° ${String(perceptionCount).padStart(2, "0")}`;
+  if (perceptionCounter) perceptionCounter.textContent = `PERCEPTION N° ${String(perceptionCount).padStart(2, "0")}`;
 }
 
 // ─── Transcript Rendering ──────────────────────────────────────────────────
@@ -233,7 +233,7 @@ chrome.runtime.onMessage.addListener((event: AgentEvent) => {
 
     case "confirm":
       pendingConfirmId = event.id;
-      confirmText.textContent = event.summary;
+      if (confirmText) confirmText.textContent = event.summary;
       confirmEl.classList.remove("hidden");
       break;
 
@@ -298,8 +298,8 @@ $("new-task-btn").addEventListener("click", () => {
   privacyAuditEl.classList.add("hidden");
   setRunning(false);
   perceptionCount = 0;
-  egressBadge.textContent = "0 KB EGRESS";
-  perceptionCounter.textContent = "PERCEPTION N° 01";
+  if (egressBadge) egressBadge.textContent = "0 KB EGRESS";
+  if (perceptionCounter) perceptionCounter.textContent = "PERCEPTION N° 01";
 });
 
 // Settings

@@ -287,23 +287,10 @@ body::after {
 
 .headline-private {
   color: var(--color-accent);
-  font-style: italic;
-  font-family: var(--font-display);
-  font-weight: 900;
-  font-size: 42px;
-  letter-spacing: 0.06em;
-  position: relative;
-  display: inline-block;
-}
-.headline-private::after {
-  content: "PRIVATE";
-  position: absolute;
-  left: -2px;
-  top: 2px;
-  color: var(--color-teal);
-  z-index: -1;
-  opacity: 0.6;
-  font-style: normal;
+  font-family: var(--font-headline);
+  font-weight: 400;
+  font-size: 48px;
+  letter-spacing: 0.04em;
 }
 
 .subhead {

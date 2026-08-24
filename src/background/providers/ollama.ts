@@ -103,8 +103,8 @@ function toOllamaTools(tools: ToolSpec[]): OllamaTool[] {
 
 // ─── Streaming Parser ──────────────────────────────────────────────────────
 
-const REQUEST_TIMEOUT_MS = 60_000;
-const CHUNK_TIMEOUT_MS = 15_000;
+const REQUEST_TIMEOUT_MS = 120_000;
+const CHUNK_TIMEOUT_MS = 30_000;
 
 async function streamChat(
   baseUrl: string,
@@ -145,17 +145,22 @@ async function streamChat(
     let buffer = "";
 
     try {
+      let chunkTimer: ReturnType<typeof setTimeout> | undefined;
       while (!done) {
         // Add per-chunk timeout to detect stuck streams.
         const chunkPromise = reader.read();
         const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error("Stream chunk timeout")), CHUNK_TIMEOUT_MS);
+          chunkTimer = setTimeout(() => reject(new Error("Stream chunk timeout")), CHUNK_TIMEOUT_MS);
         });
 
         const result = await Promise.race([chunkPromise, timeoutPromise]) as {
           value?: Uint8Array;
           done: boolean;
         };
+
+        // Clear the timer — we got a chunk in time.
+        if (chunkTimer !== undefined) clearTimeout(chunkTimer);
+        chunkTimer = undefined;
 
         if (result.done) break;
         if (!result.value) continue;
@@ -262,22 +267,33 @@ export function createOllamaPlanner(model: string): Planner {
         if (error instanceof PlannerError) {
           const msg = error.message;
 
-          // 403 = CORS issue — retry without tools.
+          // 403 — could be CORS or model not supporting tools. Retry without tools first.
           if (msg.includes("403")) {
             console.warn("[VLESS] Ollama 403 with tools, retrying without tools.");
-            const bodyNoTools: OllamaChatRequest = { ...body, tools: undefined };
-            const result = await streamChat(baseUrl, bodyNoTools, signal, onText);
-            return {
-              text: result.text,
-              toolCalls: result.toolCalls,
-              stopReason: result.toolCalls.length > 0 ? "tool_use" : "end_turn",
-            };
+            try {
+              const bodyNoTools: OllamaChatRequest = { ...body, tools: undefined };
+              const result = await streamChat(baseUrl, bodyNoTools, signal, onText);
+              return {
+                text: result.text,
+                toolCalls: result.toolCalls,
+                stopReason: result.toolCalls.length > 0 ? "tool_use" : "end_turn",
+              };
+            } catch {
+              // Still failing — probably a CORS issue. Show the hint.
+              throw new PlannerError(
+                `Ollama returned 403 Forbidden. This is likely a CORS issue.\n\n` +
+                  `Fix: Stop Ollama, set env var, restart:\n` +
+                  `  taskkill /F /IM ollama.exe\n` +
+                  `  set OLLAMA_ORIGINS=chrome-extension://*\n` +
+                  `  ollama serve`,
+              );
+            }
           }
 
           // Other HTTP errors — show with CORS hint.
-          if (msg.includes("403") || msg.includes("CORS")) {
+          if (msg.includes("CORS")) {
             throw new PlannerError(
-              `Ollama returned 403 Forbidden. This is a CORS issue.\n\n` +
+              `Ollama CORS error.\n\n` +
                 `Fix: Stop Ollama, set env var, restart:\n` +
                 `  taskkill /F /IM ollama.exe\n` +
                 `  set OLLAMA_ORIGINS=chrome-extension://*\n` +

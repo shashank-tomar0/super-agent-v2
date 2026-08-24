@@ -18,7 +18,7 @@ import type {
   Settings,
   TranscriptEntry,
 } from "../shared/types";
-import { SYSTEM_PROMPT, taskPrompt } from "./prompt";
+import { SYSTEM_PROMPT, SYSTEM_PROMPT_LOCAL, taskPrompt } from "./prompt";
 import { TOOLS, PAGE_ACTIONS } from "./tools";
 import { TabController, execute, isRestricted } from "./executor";
 import { detectInjection, gate } from "./safety";
@@ -140,6 +140,12 @@ export async function runTask(
 ): Promise<void> {
   const { settings, emit, askConfirm, signal, captureScreenshot, recordAudit } = deps;
 
+  // Use a shorter system prompt for small local models to avoid context overflow.
+  const isLocalModel = settings.provider === "ollama";
+  const systemPrompt = isLocalModel ? SYSTEM_PROMPT_LOCAL : SYSTEM_PROMPT;
+  // Small models have limited context — cap snapshot elements to avoid truncation.
+  const maxSnapshotElements = isLocalModel ? 30 : 80;
+
   const planner = createPlanner(settings);
 
   let controller = new TabController(startTabId);
@@ -230,6 +236,15 @@ export async function runTask(
         text: `Task privacy: tokenized ${taskTokenCount} PII item(s) in your request.`,
       },
     });
+  }
+
+  // For small models, truncate snapshot to avoid context overflow.
+  if (snapshot && snapshot.elements.length > maxSnapshotElements) {
+    snapshot = {
+      ...snapshot,
+      elements: snapshot.elements.slice(0, maxSnapshotElements),
+      truncated: true,
+    };
   }
 
   const messages: ConvMessage[] = [
@@ -347,7 +362,7 @@ export async function runTask(
     let turn;
     try {
       turn = await planner.run({
-        system: SYSTEM_PROMPT,
+        system: systemPrompt,
         messages,
         tools: TOOLS,
         signal,
@@ -494,6 +509,15 @@ export async function runTask(
           // Apply privacy pipeline to fresh snapshot.
           const { sanitized, piiCount } = sanitizeSnapshot(snapshot);
           snapshot = sanitized;
+
+          // For small models, truncate fresh snapshots to avoid context overflow.
+          if (isLocalModel && snapshot.elements.length > maxSnapshotElements) {
+            snapshot = {
+              ...snapshot,
+              elements: snapshot.elements.slice(0, maxSnapshotElements),
+              truncated: true,
+            };
+          }
           piiTotal += piiCount;
 
           warnIfInjected(fresh, emit);
