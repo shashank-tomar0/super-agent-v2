@@ -106,6 +106,10 @@ export interface AgentDeps {
   /** Resolves true when the user approves a gated action. */
   askConfirm: (id: string, summary: string) => Promise<boolean>;
   signal: AbortSignal;
+  /** Capture and process a screenshot through the privacy pipeline. */
+  captureScreenshot?: () => Promise<{
+    processed: import("../shared/types").ProcessedScreenshotResult;
+  } | null>;
 }
 
 // ─── Main Loop ──────────────────────────────────────────────────────────────
@@ -124,7 +128,7 @@ export async function runTask(
   startTabId: number,
   deps: AgentDeps,
 ): Promise<void> {
-  const { settings, emit, askConfirm, signal } = deps;
+  const { settings, emit, askConfirm, signal, captureScreenshot } = deps;
 
   const planner = createPlanner(settings);
 
@@ -170,6 +174,25 @@ export async function runTask(
           text: `Privacy: detected and redacted ${piiCount} sensitive item(s) from page context.`,
         },
       });
+    }
+  }
+
+  // Capture initial screenshot through privacy pipeline (if available).
+  if (captureScreenshot) {
+    try {
+      const screenshotResult = await captureScreenshot();
+      if (screenshotResult) {
+        emit({
+          kind: "entry",
+          entry: {
+            id: nextId(),
+            role: "system",
+            text: `Screenshot captured: ${screenshotResult.processed.redactedCount} PII items redacted in ${screenshotResult.processed.processingTimeMs.toFixed(0)}ms.`,
+          },
+        });
+      }
+    } catch {
+      // Screenshot capture is optional — DOM perception still works.
     }
   }
 
@@ -306,6 +329,19 @@ export async function runTask(
           piiTotal += piiCount;
 
           warnIfInjected(fresh, emit);
+
+          // Capture screenshot after page change (if available).
+          if (captureScreenshot) {
+            try {
+              const screenshotResult = await captureScreenshot();
+              if (screenshotResult) {
+                observation +=
+                  `\n\n[Screenshot: ${screenshotResult.processed.redactedCount} PII redacted]`;
+              }
+            } catch {
+              // Screenshot is optional.
+            }
+          }
 
           if (piiCount > 0) {
             observation +=

@@ -1,6 +1,7 @@
 import type {
   AgentEvent,
   PanelCommand,
+  ProcessedScreenshotResult,
   Settings,
   TranscriptEntry,
 } from "../shared/types";
@@ -46,6 +47,117 @@ function askConfirm(id: string, summary: string): Promise<boolean> {
   });
 }
 
+// ─── Screenshot Capture (Service Worker Only) ───────────────────────────────
+
+/**
+ * Ensure the offscreen document exists. Only the service worker can
+ * create offscreen documents via chrome.offscreen.createDocument.
+ */
+async function ensureOffscreenDocument(): Promise<void> {
+  try {
+    const existingContexts = await (chrome.runtime as any).getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"],
+    });
+    if (existingContexts?.length > 0) return;
+  } catch {
+    // getContexts may not be available in older Chrome versions.
+  }
+
+  try {
+    await (chrome.offscreen as any).createDocument({
+      url: "offscreen.html",
+      reasons: ["WORKERS", "BLOBS"],
+      justification: "WebGPU inference for on-device vision model and PII detection",
+    });
+  } catch {
+    // May already exist.
+  }
+}
+
+/**
+ * Capture the visible tab area. This MUST run in the service worker
+ * because chrome.tabs.captureVisibleTab is not available in content scripts.
+ */
+async function captureVisibleTab(): Promise<{ dataUrl: string; width: number; height: number } | null> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return null;
+
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId!, { format: "png" });
+
+    // Get image dimensions by loading into an offscreen canvas.
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    const bitmap = await createImageBitmap(blob);
+    const width = bitmap.width;
+    const height = bitmap.height;
+    bitmap.close();
+
+    return { dataUrl, width, height };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Process a screenshot through the offscreen document's privacy pipeline.
+ * Returns the redacted image and detection results.
+ */
+async function processScreenshot(
+  dataUrl: string,
+  width: number,
+  height: number,
+): Promise<ProcessedScreenshotResult> {
+  await ensureOffscreenDocument();
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("Offscreen processing timed out after 10s"));
+    }, 10000);
+
+    // Listen for the response from the offscreen document.
+    const listener = (
+      message: { type: string; result?: ProcessedScreenshotResult; error?: string },
+      _sender: chrome.runtime.MessageSender,
+    ) => {
+      if (message.type === "screenshot-processed") {
+        clearTimeout(timeout);
+        chrome.runtime.onMessage.removeListener(listener);
+        if (message.error) {
+          reject(new Error(message.error));
+        } else {
+          resolve(message.result!);
+        }
+      }
+    };
+    chrome.runtime.onMessage.addListener(listener);
+
+    // Send the screenshot to the offscreen document for processing.
+    chrome.runtime.sendMessage({
+      type: "process-screenshot",
+      dataUrl,
+      width,
+      height,
+    });
+  });
+}
+
+/**
+ * Capture and process a screenshot in one call.
+ * Called by the agent loop for visual perception.
+ */
+export async function captureAndProcessScreenshot(): Promise<{
+  processed: ProcessedScreenshotResult;
+} | null> {
+  const captured = await captureVisibleTab();
+  if (!captured) return null;
+
+  const processed = await processScreenshot(captured.dataUrl, captured.width, captured.height);
+  return { processed };
+}
+
+// ─── Agent Loop ──────────────────────────────────────────────────────────────
+
 async function start(task: string, tabId: number): Promise<void> {
   if (running) return;
 
@@ -57,7 +169,13 @@ async function start(task: string, tabId: number): Promise<void> {
   emit({ kind: "entry", entry: { id: `u-${Date.now()}`, role: "user", text: task } });
 
   try {
-    await runTask(task, tabId, { settings, emit, askConfirm, signal: abort.signal });
+    await runTask(task, tabId, {
+      settings,
+      emit,
+      askConfirm,
+      signal: abort.signal,
+      captureScreenshot: captureAndProcessScreenshot,
+    });
   } catch (error) {
     emit({
       kind: "entry",
