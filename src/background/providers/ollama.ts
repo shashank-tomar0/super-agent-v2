@@ -114,6 +114,18 @@ function toStopReason(
 export function createOllamaPlanner(model: string): Planner {
   const baseUrl = "http://localhost:11434";
 
+  async function chat(
+    body: OllamaChatRequest,
+    signal: AbortSignal,
+  ): Promise<Response> {
+    return fetch(`${baseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+  }
+
   return {
     label: `Ollama (Local) ${model}`,
 
@@ -133,27 +145,45 @@ export function createOllamaPlanner(model: string): Planner {
 
       let response: Response;
       try {
-        response = await fetch(`${baseUrl}/api/chat`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-          signal,
-        });
+        response = await chat(body, signal);
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
           throw error;
         }
         throw new PlannerError(
           `Cannot connect to Ollama at ${baseUrl}. Is Ollama running? ` +
-            `Run "ollama serve" to start it.`,
+            `Run "ollama serve" to start it. If on Windows, run:\n` +
+            `  set OLLAMA_ORIGINS=chrome-extension://*\n` +
+            `  ollama serve`,
         );
+      }
+
+      // If 403 Forbidden, it's likely a CORS issue — browser extensions need
+      // OLLAMA_ORIGINS set. Try again without tools as a fallback.
+      if (response.status === 403) {
+        const bodyNoTools: OllamaChatRequest = { ...body, tools: undefined };
+        try {
+          response = await chat(bodyNoTools, signal);
+        } catch {
+          throw new PlannerError(
+            `Ollama returned 403 Forbidden. This is a CORS issue. ` +
+              `Run this in your terminal, then restart Ollama:\n\n` +
+              `  set OLLAMA_ORIGINS=chrome-extension://*\n` +
+              `  ollama serve\n\n` +
+              `Or on PowerShell:\n` +
+              `  $env:OLLAMA_ORIGINS = \"chrome-extension://*\"\n` +
+              `  ollama serve`,
+          );
+        }
+        // If it worked without tools, log a warning but continue.
+        console.warn("[VLESS] Ollama 403 with tools, retrying without tools.");
       }
 
       if (!response.ok) {
         const text = await response.text().catch(() => "");
         throw new PlannerError(
           `Ollama returned ${response.status}: ${text || response.statusText}. ` +
-            `Make sure model "${model}" is pulled (ollama pull ${model}).`,
+            `Make sure model \"${model}\" is pulled (ollama pull ${model}).`,
         );
       }
 
