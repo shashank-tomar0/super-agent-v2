@@ -7,57 +7,108 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header class="bar">
-      <div class="brand">
-        <span class="dot" id="status-dot"></span>
-        <strong>VLEE</strong>
+    <!-- ─── Top Bar ─────────────────────────────────────────────────── -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="brand-mark">V</span>
+        <span class="brand-name">VLEE</span>
+        <span class="egress-badge" id="egress-badge">0 KB EGRESS</span>
       </div>
-      <div class="bar-actions">
-        <button id="new-task" class="ghost" title="Clear the transcript">New</button>
-        <button id="settings" class="ghost" title="Open options">Settings</button>
+      <div class="topbar-right">
+        <button class="icon-btn" id="btn-perception" title="Perception view">◉</button>
+        <button class="icon-btn" id="btn-settings" title="Settings">⚙</button>
       </div>
     </header>
 
-    <main id="transcript" class="transcript">
-      <div class="empty" id="empty">
-        <h2>What should I do?</h2>
-        <p>I work in the tab you have open. Tell me a goal, not a click.</p>
-        <ul class="examples">
-          <li data-example="Summarise this page in five bullet points.">Summarise this page in five bullet points</li>
-          <li data-example="Find the pricing page on this site and tell me the cheapest paid plan.">Find the cheapest paid plan on this site</li>
-          <li data-example="Search Hacker News for posts about browser agents from the last month and list the top five.">Search Hacker News for browser-agent posts</li>
-        </ul>
+    <!-- ─── Masthead ────────────────────────────────────────────────── -->
+    <div class="masthead">
+      <div class="masthead-meta">
+        <span>FREE BROADSHEET</span>
+        <span class="dot">·</span>
+        <span>EDITION 04</span>
       </div>
-    </main>
+      <div class="masthead-meta masthead-right">
+        <span id="perception-counter">PERCEPTION N° 01</span>
+      </div>
+    </div>
 
+    <h1 class="headline">
+      <span class="headline-private">PRIVATE</span> VISUAL AGENT
+    </h1>
+    <p class="subhead">Zero data egress. PII detection &amp; privacy pipeline run 100% inside your browser.</p>
+
+    <hr class="rule" />
+
+    <!-- ─── Context Presets ─────────────────────────────────────────── -->
+    <div class="section-header">
+      <span>CONTEXT PRESETS</span>
+      <div class="preset-btns">
+        <button class="preset-btn" data-preset="aadhaar">+ AADHAAR</button>
+        <button class="preset-btn" data-preset="pan">+ PAN</button>
+        <button class="preset-btn" data-preset="contact">+ CONTACT</button>
+      </div>
+    </div>
+
+    <!-- ─── Task Input ──────────────────────────────────────────────── -->
+    <div class="input-box">
+      <textarea
+        id="task-input"
+        rows="2"
+        placeholder="Instruct agent (e.g. fill form, scan PII)..."
+      ></textarea>
+      <button id="run-btn" class="run-arrow" title="Run task">→</button>
+      <button id="stop-btn" class="run-arrow stop hidden" title="Stop task">■</button>
+    </div>
+
+    <!-- ─── Quick Actions ───────────────────────────────────────────── -->
+    <div class="section-header">
+      <span>QUICK ACTIONS</span>
+    </div>
+    <div class="quick-grid">
+      <button class="quick-btn" data-action="fill-form">✎ FILL FORM</button>
+      <button class="quick-btn" data-action="extract-data">📊 EXTRACT DATA</button>
+      <button class="quick-btn" data-action="scan-pii">◎ SCAN PII</button>
+      <button class="quick-btn" data-action="click-target">⊘ CLICK TARGET</button>
+    </div>
+
+    <!-- ─── Transcript ──────────────────────────────────────────────── -->
+    <div class="transcript-area" id="transcript">
+      <div class="empty-state" id="empty">
+        <div class="empty-icon">◉</div>
+        <p>AGENT STANDING BY</p>
+        <p class="empty-sub">Give a task or use a quick action above.</p>
+      </div>
+    </div>
+
+    <!-- ─── Status Bar ──────────────────────────────────────────────── -->
+    <div class="status-bar">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">IDLE</span>
+      <div class="status-bar-right">
+        <button id="new-task-btn" class="link-btn">NEW</button>
+      </div>
+    </div>
+
+    <!-- ─── Confirm Dialog ──────────────────────────────────────────── -->
+    <div id="confirm" class="confirm-bar hidden">
+      <span id="confirm-text"></span>
+      <div class="confirm-actions">
+        <button id="confirm-no" class="confirm-btn">DECLINE</button>
+        <button id="confirm-yes" class="confirm-btn confirm-allow">ALLOW</button>
+      </div>
+    </div>
+
+    <!-- ─── Privacy Audit Panel ─────────────────────────────────────── -->
     <div id="privacy-audit" class="privacy-audit hidden">
       <div class="audit-header">
-        <h3>🔒 Privacy Audit</h3>
-        <button id="audit-close" class="ghost">✕</button>
+        <span class="audit-title">🔒 PRIVACY AUDIT</span>
+        <button id="audit-close" class="link-btn">CLOSE ×</button>
       </div>
       <div id="audit-summary" class="audit-summary"></div>
       <div id="audit-screenshots" class="audit-screenshots"></div>
       <div id="audit-detections" class="audit-detections"></div>
       <div id="audit-tokens" class="audit-tokens"></div>
     </div>
-
-    <div id="confirm" class="confirm hidden">
-      <p id="confirm-text"></p>
-      <div class="confirm-actions">
-        <button id="confirm-no" class="ghost">Cancel</button>
-        <button id="confirm-yes" class="primary">Allow</button>
-      </div>
-    </div>
-
-    <form id="composer" class="composer">
-      <textarea
-        id="input"
-        rows="2"
-        placeholder="Give me a task…  (Enter to send, Shift+Enter for a new line)"
-      ></textarea>
-      <button id="send" type="submit" class="primary">Run</button>
-      <button id="stop" type="button" class="danger hidden">Stop</button>
-    </form>
 
     <script type="module" src="sidepanel.js"></script>
   </body>

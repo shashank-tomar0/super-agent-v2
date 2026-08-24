@@ -2,148 +2,431 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>VLEE Agent — Settings</title>
-    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VLEE Settings</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Playfair+Display:wght@700;900&display=swap" rel="stylesheet" />
     <style>
-      body { height: auto; padding: 28px; max-width: 620px; margin: 0 auto; display: block; }
-      h1 { font-size: 18px; margin: 0 0 4px; }
-      h2 { font-size: 15px; margin: 24px 0 8px; padding-top: 16px; border-top: 1px solid var(--border); }
-      .sub { color: var(--muted); margin: 0 0 24px; }
-      label { display: block; font-weight: 600; margin: 18px 0 4px; }
-      .hint { color: var(--muted); font-size: 12.5px; margin: 4px 0 0; }
-      .hint a { color: var(--accent); }
-      input[type="text"], input[type="password"], input[type="number"], select {
-        width: 100%; font: inherit; color: var(--text); background: var(--surface);
-        border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px;
+      :root {
+        --bg: #f5f0e8;
+        --surface: #ebe5d8;
+        --border: #1a1a1a;
+        --text: #1a1a1a;
+        --muted: #6b6355;
+        --accent: #c0392b;
+        --accent-green: #27ae60;
+        --paper: #faf6ee;
+        --ink: #1a1a1a;
+        --font-mono: 'IBM Plex Mono', 'Courier New', monospace;
+        --font-display: 'Playfair Display', Georgia, serif;
       }
-      .tabs { display: flex; gap: 6px; margin-top: 6px; }
-      .tabs button {
-        flex: 1; background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 1.5;
+        background: var(--bg);
+        color: var(--text);
+        padding: 0;
       }
-      .tabs button[aria-selected="true"] {
-        border-color: var(--accent); color: var(--text); background: var(--accent-soft);
+
+      /* ─── Header ─────────────────────────────────────── */
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 20px;
+        border-bottom: 2px solid var(--border);
+        background: var(--ink);
+        color: var(--bg);
+      }
+      .header h1 {
+        font-family: var(--font-display);
+        font-size: 16px;
+        font-weight: 900;
+        letter-spacing: 0.05em;
+      }
+      .close-btn {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 700;
+        background: transparent;
+        color: var(--bg);
+        border: 1px solid rgba(255,255,255,0.3);
+        padding: 4px 12px;
+        cursor: pointer;
+        letter-spacing: 0.08em;
+      }
+      .close-btn:hover { background: rgba(255,255,255,0.15); }
+
+      /* ─── Section ────────────────────────────────────── */
+      .section {
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--border);
+      }
+      .section-title {
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .section-subtitle {
+        font-size: 10px;
+        color: var(--muted);
+        margin-bottom: 12px;
+      }
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+
+      /* ─── Provider List ──────────────────────────────── */
+      .provider-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+        border: 2px solid var(--border);
+      }
+      .provider-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+        transition: background 0.12s;
+      }
+      .provider-item:last-child { border-bottom: none; }
+      .provider-item:hover { background: var(--surface); }
+      .provider-item.active { background: var(--paper); }
+
+      .provider-radio {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .provider-item.active .provider-radio {
+        border-color: var(--accent);
+      }
+      .provider-item.active .provider-radio::after {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+
+      .provider-info { flex: 1; }
+      .provider-name {
+        font-size: 12px;
         font-weight: 600;
       }
-      .with-button { display: flex; gap: 8px; align-items: stretch; }
-      .with-button input { flex: 1; }
-      .with-button button { white-space: nowrap; }
-      .row { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
-      .row input { width: auto; }
-      .row label { margin: 0; }
-      footer { margin-top: 26px; display: flex; align-items: center; gap: 12px; }
-      #saved { font-size: 12.5px; }
-      #saved.ok { color: var(--ok); }
-      #saved.bad { color: var(--danger); }
-      #model-status { min-height: 1.2em; }
-      .toggle-group { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
-      .toggle-row { display: flex; align-items: center; gap: 10px; }
-      .toggle-row input[type="checkbox"] { width: auto; }
-      .toggle-row .toggle-label { flex: 1; }
-      .toggle-row .toggle-label strong { display: block; font-size: 13px; }
-      .toggle-row .toggle-label span { color: var(--muted); font-size: 12px; }
-      .status-badge {
-        display: inline-block; padding: 2px 8px; border-radius: 10px;
-        font-size: 11px; font-weight: 600;
+      .provider-model {
+        font-size: 10px;
+        color: var(--muted);
+        font-style: italic;
       }
-      .status-badge.active { background: var(--ok); color: #fff; }
-      .status-badge.inactive { background: var(--muted); color: #fff; }
+
+      .provider-badge {
+        font-size: 8px;
+        font-weight: 700;
+        padding: 3px 8px;
+        border: 1.5px solid var(--border);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .provider-badge.enabled {
+        background: var(--ink);
+        color: var(--bg);
+        border-color: var(--ink);
+      }
+      .provider-badge.disabled {
+        background: transparent;
+        color: var(--muted);
+      }
+
+      /* ─── Active Planner Box ─────────────────────────── */
+      .active-planner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 14px;
+        border: 2px solid var(--border);
+        background: var(--paper);
+        margin-bottom: 12px;
+      }
+      .active-planner .label {
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .active-planner .model {
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .active-badge {
+        font-size: 9px;
+        font-weight: 700;
+        background: var(--accent-green);
+        color: #fff;
+        padding: 3px 10px;
+        letter-spacing: 0.08em;
+      }
+
+      /* ─── Form Fields ────────────────────────────────── */
+      .field-group {
+        margin-bottom: 10px;
+      }
+      .field-label {
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 4px;
+        display: block;
+      }
+      .field-input {
+        width: 100%;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        padding: 8px 10px;
+        border: 1.5px solid var(--border);
+        background: var(--paper);
+        color: var(--text);
+        outline: none;
+      }
+      .field-input:focus { border-color: var(--accent); }
+      .field-input::placeholder { color: var(--muted); font-style: italic; }
+
+      .field-row {
+        display: flex;
+        gap: 8px;
+      }
+      .field-row .field-group { flex: 1; }
+
+      /* ─── Buttons ────────────────────────────────────── */
+      .btn {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 700;
+        padding: 8px 16px;
+        border: 1.5px solid var(--border);
+        cursor: pointer;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        transition: all 0.12s;
+      }
+      .btn-primary {
+        background: var(--ink);
+        color: var(--bg);
+      }
+      .btn-primary:hover { background: #333; }
+      .btn-secondary {
+        background: transparent;
+        color: var(--text);
+      }
+      .btn-secondary:hover { background: var(--surface); }
+      .btn:disabled { opacity: 0.5; cursor: default; }
+
+      /* ─── Toggle ─────────────────────────────────────── */
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .toggle-row:last-child { border-bottom: none; }
+      .toggle-label {
+        font-size: 11px;
+        font-weight: 500;
+      }
+      .toggle-desc {
+        font-size: 9px;
+        color: var(--muted);
+      }
+      .toggle {
+        position: relative;
+        width: 36px;
+        height: 20px;
+        appearance: none;
+        background: var(--muted);
+        border-radius: 10px;
+        cursor: pointer;
+        transition: background 0.2s;
+        flex-shrink: 0;
+      }
+      .toggle:checked { background: var(--accent-green); }
+      .toggle::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #fff;
+        transition: transform 0.2s;
+      }
+      .toggle:checked::after { transform: translateX(16px); }
+
+      /* ─── Status ─────────────────────────────────────── */
+      .status-msg {
+        font-size: 10px;
+        font-weight: 600;
+        padding: 6px 0;
+        letter-spacing: 0.05em;
+      }
+      .status-msg.ok { color: var(--accent-green); }
+      .status-msg.bad { color: var(--accent); }
+
+      /* ─── Privacy Section ────────────────────────────── */
+      .privacy-grid {
+        border: 2px solid var(--border);
+      }
     </style>
   </head>
   <body>
-    <h1>VLEE Agent</h1>
-    <p class="sub">
-      Privacy-preserving vision agent. Settings are stored locally in this browser profile.
-      Your key is only ever sent to the provider you selected.
-    </p>
-
-    <!-- ─── LLM Provider ─── -->
-    <h2>🧠 LLM Provider</h2>
-    <label>Provider</label>
-    <div class="tabs" id="provider-tabs" role="tablist"></div>
-    <p class="hint" id="provider-hint"></p>
-
-    <label for="apiKey">API key</label>
-    <input id="apiKey" type="password" autocomplete="off" spellcheck="false" />
-    <p class="hint">Each provider's key is remembered separately.</p>
-
-    <label for="model">Model</label>
-    <div class="with-button">
-      <input id="model" type="text" list="model-list" spellcheck="false" autocomplete="off" />
-      <button id="refresh-models" class="ghost" type="button">Refresh list</button>
-    </div>
-    <datalist id="model-list"></datalist>
-    <p class="hint" id="model-status">Click Refresh to pull live model catalogue.</p>
-
-    <label for="maxSteps">Step limit per task</label>
-    <input id="maxSteps" type="number" min="5" max="200" />
-
-    <div class="row">
-      <input id="confirmRisky" type="checkbox" />
-      <label for="confirmRisky">Ask before anything irreversible</label>
+    <!-- Header -->
+    <div class="header">
+      <h1>AI PROVIDER SETUP</h1>
+      <button class="close-btn" id="close">CLOSE ×</button>
     </div>
 
-    <!-- ─── VLEE Server ─── -->
-    <h2>🖥️ VLEE Server <span class="status-badge inactive" id="server-status">OFF</span></h2>
-    <div class="row">
-      <input id="serverEnabled" type="checkbox" />
-      <label for="serverEnabled">Enable VLEE server for VLM processing</label>
+    <!-- AI Providers -->
+    <div class="section">
+      <div class="section-header">
+        <div>
+          <div class="section-title">AI PROVIDERS</div>
+          <div class="section-subtitle">Configure LLM planners for browser automation.</div>
+        </div>
+        <button class="btn btn-secondary" id="refresh-models">TEST PROVIDERS</button>
+      </div>
+
+      <!-- Active Planner -->
+      <div class="active-planner">
+        <div>
+          <div class="label">ACTIVE PLANNER</div>
+          <div class="model" id="active-model-display">—</div>
+        </div>
+        <div class="active-badge" id="active-provider-badge">—</div>
+      </div>
+
+      <!-- Provider List -->
+      <div class="provider-list" id="provider-list"></div>
+
+      <div id="model-status" class="status-msg"></div>
     </div>
-    <p class="hint">
-      When enabled, sanitized screenshots + tokenized DOM context are sent to a
-      privacy-preserving VLM server instead of directly to the LLM provider.
-    </p>
 
-    <label for="serverUrl">Server URL</label>
-    <input id="serverUrl" type="text" placeholder="http://localhost:3001" />
-    <p class="hint">The VLEE server endpoint. Run <code>npm run dev</code> in the server/ directory.</p>
-
-    <label for="serverApiKey">Server API key (optional)</label>
-    <input id="serverApiKey" type="password" autocomplete="off" placeholder="Leave empty for local server" />
-
-    <!-- ─── Privacy Pipeline ─── -->
-    <h2>🔒 Privacy Pipeline <span class="status-badge active" id="privacy-status">ACTIVE</span></h2>
-    <p class="hint" style="margin-bottom: 12px;">
-      These settings control what happens before any data crosses a network boundary.
-    </p>
-
-    <div class="toggle-group">
-      <div class="toggle-row">
-        <input id="blurFaces" type="checkbox" checked />
-        <div class="toggle-label">
-          <strong>Face Detection & Blur</strong>
-          <span>Detect faces in screenshots and apply Gaussian blur before sending</span>
-        </div>
+    <!-- API Key -->
+    <div class="section">
+      <div class="section-title">API KEY</div>
+      <div class="field-group" style="margin-top: 8px;">
+        <input type="password" class="field-input" id="apiKey" placeholder="sk-..." />
       </div>
+      <div id="provider-hint" style="font-size: 9px; color: var(--muted); margin-top: 4px;"></div>
+    </div>
 
-      <div class="toggle-row">
-        <input id="maskCredentials" type="checkbox" checked />
-        <div class="toggle-label">
-          <strong>Credential Masking</strong>
-          <span>Black out password fields, API keys, and card numbers</span>
-        </div>
+    <!-- Model Selection -->
+    <div class="section">
+      <div class="section-title">MODEL</div>
+      <div class="field-group" style="margin-top: 8px;">
+        <input type="text" class="field-input" id="model" list="model-list" placeholder="claude-opus-5" />
+        <datalist id="model-list"></datalist>
       </div>
+    </div>
 
-      <div class="toggle-row">
-        <input id="tokenizePII" type="checkbox" checked />
-        <div class="toggle-label">
-          <strong>PII Tokenization</strong>
-          <span>Replace Aadhaar, PAN, SSN and other ID numbers with opaque tokens</span>
+    <!-- Agent Config -->
+    <div class="section">
+      <div class="section-title">AGENT CONFIG</div>
+      <div class="field-row" style="margin-top: 8px;">
+        <div class="field-group">
+          <label class="field-label">MAX STEPS</label>
+          <input type="number" class="field-input" id="maxSteps" value="40" min="5" max="200" />
         </div>
-      </div>
-
-      <div class="toggle-row">
-        <input id="showRedactionLabels" type="checkbox" />
-        <div class="toggle-label">
-          <strong>Show Redaction Labels</strong>
-          <span>Display "🔴 Face" / "🔒 Password" labels on redacted screenshots (demo mode)</span>
+        <div class="field-group">
+          <label class="field-label">CONFIRM RISKY</label>
+          <div style="padding-top: 4px;">
+            <input type="checkbox" class="toggle" id="confirmRisky" checked />
+          </div>
         </div>
       </div>
     </div>
 
-    <footer>
-      <button id="save" class="primary">Save</button>
-      <span id="saved"></span>
-    </footer>
+    <!-- Privacy Settings -->
+    <div class="section">
+      <div class="section-title">PRIVACY PIPELINE</div>
+      <div class="privacy-grid" style="margin-top: 8px;">
+        <div class="toggle-row">
+          <div>
+            <div class="toggle-label">Blur Faces</div>
+            <div class="toggle-desc">Detect and blur faces in screenshots</div>
+          </div>
+          <input type="checkbox" class="toggle" id="blurFaces" checked />
+        </div>
+        <div class="toggle-row">
+          <div>
+            <div class="toggle-label">Mask Credentials</div>
+            <div class="toggle-desc">Black out password and credit card fields</div>
+          </div>
+          <input type="checkbox" class="toggle" id="maskCredentials" checked />
+        </div>
+        <div class="toggle-row">
+          <div>
+            <div class="toggle-label">Tokenize PII</div>
+            <div class="toggle-desc">Replace sensitive values with opaque tokens</div>
+          </div>
+          <input type="checkbox" class="toggle" id="tokenizePII" checked />
+        </div>
+        <div class="toggle-row">
+          <div>
+            <div class="toggle-label">Show Redaction Labels</div>
+            <div class="toggle-desc">Display labels over redacted regions (demo mode)</div>
+          </div>
+          <input type="checkbox" class="toggle" id="showRedactionLabels" />
+        </div>
+      </div>
+    </div>
+
+    <!-- VLEE Server -->
+    <div class="section">
+      <div class="section-title">VLEE SERVER</div>
+      <div class="toggle-row" style="margin-top: 8px;">
+        <div>
+          <div class="toggle-label">Enable Server</div>
+          <div class="toggle-desc">Route sanitized data through VLEE server for VLM processing</div>
+        </div>
+        <input type="checkbox" class="toggle" id="serverEnabled" />
+      </div>
+      <div class="field-group" style="margin-top: 8px;">
+        <label class="field-label">SERVER URL</label>
+        <input type="text" class="field-input" id="serverUrl" value="http://localhost:3001" />
+      </div>
+      <div class="field-group">
+        <label class="field-label">SERVER API KEY</label>
+        <input type="password" class="field-input" id="serverApiKey" placeholder="Optional" />
+      </div>
+    </div>
+
+    <!-- Save -->
+    <div class="section" style="border-bottom: none;">
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <button class="btn btn-primary" id="save">SAVE CONFIGURATION</button>
+        <span class="status-msg" id="saved"></span>
+      </div>
+    </div>
 
     <script type="module" src="options.js"></script>
   </body>

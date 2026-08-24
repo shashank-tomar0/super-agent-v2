@@ -1,21 +1,46 @@
 import type { AgentEvent, PanelCommand, TranscriptEntry } from "../shared/types";
 
+// ─── DOM References ────────────────────────────────────────────────────────
+
 const $ = <T extends HTMLElement>(id: string): T =>
   document.getElementById(id) as T;
 
 const transcriptEl = $("transcript");
 const emptyEl = $("empty");
-const inputEl = $<HTMLTextAreaElement>("input");
-const sendBtn = $<HTMLButtonElement>("send");
-const stopBtn = $<HTMLButtonElement>("stop");
+const taskInput = $<HTMLTextAreaElement>("task-input");
+const runBtn = $("run-btn");
+const stopBtn = $("stop-btn");
 const statusDot = $("status-dot");
+const statusText = $("status-text");
 const confirmEl = $("confirm");
 const confirmText = $("confirm-text");
 const privacyAuditEl = $("privacy-audit");
+const egressBadge = $("egress-badge");
+const perceptionCounter = $("perception-counter");
 
 /** Rendered entries, so patches can find their node without a re-render. */
 const nodes = new Map<string, HTMLElement>();
 let pendingConfirmId: string | null = null;
+let perceptionCount = 0;
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+function send(command: PanelCommand): Promise<unknown> {
+  return chrome.runtime.sendMessage(command).catch(() => undefined);
+}
+
+function atBottom(): boolean {
+  return (
+    transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 60
+  );
+}
+
+function updatePerceptionCount() {
+  perceptionCount++;
+  perceptionCounter.textContent = `PERCEPTION N° ${String(perceptionCount).padStart(2, "0")}`;
+}
+
+// ─── Transcript Rendering ──────────────────────────────────────────────────
 
 const GLYPHS: Record<string, string> = {
   click: "→",
@@ -34,16 +59,6 @@ const GLYPHS: Record<string, string> = {
   list_tabs: "☰",
 };
 
-function send(command: PanelCommand): Promise<unknown> {
-  return chrome.runtime.sendMessage(command).catch(() => undefined);
-}
-
-function atBottom(): boolean {
-  return (
-    transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 60
-  );
-}
-
 function render(entry: TranscriptEntry): void {
   emptyEl.classList.add("hidden");
   const stick = atBottom();
@@ -61,7 +76,8 @@ function render(entry: TranscriptEntry): void {
 
   if (entry.role === "step") {
     node.querySelector(".glyph")!.textContent = GLYPHS[entry.action ?? ""] ?? "•";
-    node.querySelector(".detail")!.textContent = entry.text;
+    const detail = node.querySelector(".detail");
+    if (detail) detail.textContent = entry.text;
     node.classList.toggle("pending", entry.pending === true);
   } else {
     node.textContent = entry.text;
@@ -72,20 +88,13 @@ function render(entry: TranscriptEntry): void {
 
 function setRunning(running: boolean): void {
   statusDot.classList.toggle("running", running);
-  sendBtn.classList.toggle("hidden", running);
+  statusText.textContent = running ? "RUNNING" : "IDLE";
+  runBtn.classList.toggle("hidden", running);
   stopBtn.classList.toggle("hidden", !running);
-  inputEl.disabled = running;
+  taskInput.disabled = running;
 }
 
-// ─── Privacy Audit Rendering ────────────────────────────────────────────────
-
-const KIND_LABELS: Record<string, string> = {
-  face: "👤 Face",
-  credential: "🔑 Credential",
-  id_number: "🪪 ID Number",
-  api_key: "🗝️ API Key",
-  pii_text: "📝 PII Text",
-};
+// ─── Privacy Audit Rendering ───────────────────────────────────────────────
 
 const KIND_EMOJI: Record<string, string> = {
   face: "👤",
@@ -93,6 +102,7 @@ const KIND_EMOJI: Record<string, string> = {
   id_number: "🪪",
   api_key: "🗝️",
   pii_text: "📝",
+  input_field: "⌨",
 };
 
 function renderPrivacyAudit(audit: {
@@ -130,24 +140,20 @@ function renderPrivacyAudit(audit: {
     for (const shot of audit.screenshots) {
       const pair = document.createElement("div");
       pair.className = "screenshot-pair";
-
       if (shot.original) {
         pair.innerHTML += `
           <div class="shot">
-            <img src="${shot.original}" alt="Original screenshot" />
+            <img src="${shot.original}" alt="Original" />
             <div class="shot-label">Original</div>
-          </div>
-        `;
+          </div>`;
       }
       if (shot.redacted) {
         pair.innerHTML += `
           <div class="shot">
-            <img src="${shot.redacted}" alt="Redacted screenshot" />
+            <img src="${shot.redacted}" alt="Redacted" />
             <div class="shot-label">🔒 Redacted</div>
-          </div>
-        `;
+          </div>`;
       }
-
       screenshotsEl.appendChild(pair);
     }
   } else {
@@ -157,17 +163,12 @@ function renderPrivacyAudit(audit: {
   // Detection chips.
   const detectionsEl = $("audit-detections");
   if (audit.allDetections.length > 0) {
-    // Deduplicate by label.
     const unique = new Map<string, { kind: string; label: string; count: number }>();
     for (const d of audit.allDetections) {
       const existing = unique.get(d.label);
-      if (existing) {
-        existing.count++;
-      } else {
-        unique.set(d.label, { kind: d.kind, label: d.label, count: 1 });
-      }
+      if (existing) existing.count++;
+      else unique.set(d.label, { kind: d.kind, label: d.label, count: 1 });
     }
-
     detectionsEl.innerHTML = `<h4>Detected PII</h4><div class="detection-list"></div>`;
     const list = detectionsEl.querySelector(".detection-list")!;
     for (const [, det] of unique) {
@@ -188,19 +189,18 @@ function renderPrivacyAudit(audit: {
     for (const tok of audit.allTokens) {
       const chip = document.createElement("span");
       chip.className = "token-chip";
-      chip.textContent = `${tok.token}`;
-      chip.title = `${KIND_LABELS[tok.kind] ?? tok.kind} — original value is never stored`;
+      chip.textContent = tok.token;
+      chip.title = "Original value is never stored";
       list.appendChild(chip);
     }
   } else {
     tokensEl.innerHTML = "";
   }
 
-  // Scroll the audit panel into view.
   privacyAuditEl.scrollIntoView({ behavior: "smooth" });
 }
 
-// ─── Event Listener ─────────────────────────────────────────────────────────
+// ─── Event Listener ────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((event: AgentEvent) => {
   switch (event.kind) {
@@ -213,7 +213,6 @@ chrome.runtime.onMessage.addListener((event: AgentEvent) => {
       if (!node) break;
       if (event.text !== undefined) {
         if (node.classList.contains("assistant")) {
-          // Streamed prose arrives as deltas.
           node.textContent = (node.textContent ?? "") + event.text;
         } else if (node.classList.contains("step")) {
           const detail = node.querySelector(".detail");
@@ -243,6 +242,8 @@ chrome.runtime.onMessage.addListener((event: AgentEvent) => {
   }
 });
 
+// ─── Confirm Dialog ────────────────────────────────────────────────────────
+
 function answerConfirm(approved: boolean): void {
   if (!pendingConfirmId) return;
   void send({ kind: "confirm-reply", id: pendingConfirmId, approved });
@@ -253,64 +254,99 @@ function answerConfirm(approved: boolean): void {
 $("confirm-yes").addEventListener("click", () => answerConfirm(true));
 $("confirm-no").addEventListener("click", () => answerConfirm(false));
 
-// Close audit panel.
+// ─── Audit Close ───────────────────────────────────────────────────────────
+
 $("audit-close").addEventListener("click", () => {
   privacyAuditEl.classList.add("hidden");
 });
 
-async function submit(): Promise<void> {
-  const task = inputEl.value.trim();
-  if (!task) return;
+// ─── Task Submission ───────────────────────────────────────────────────────
+
+async function submit(task?: string): Promise<void> {
+  const text = task ?? taskInput.value.trim();
+  if (!text) return;
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return;
 
-  inputEl.value = "";
-  inputEl.style.height = "auto";
-  // Hide previous audit when starting a new task.
+  taskInput.value = "";
+  taskInput.style.height = "auto";
   privacyAuditEl.classList.add("hidden");
-  await send({ kind: "run", task, tabId: tab.id });
+  updatePerceptionCount();
+  await send({ kind: "run", task: text, tabId: tab.id });
 }
 
-$<HTMLFormElement>("composer").addEventListener("submit", (event) => {
-  event.preventDefault();
-  void submit();
-});
-
-stopBtn.addEventListener("click", () => void send({ kind: "stop" }));
-
-$("new-task").addEventListener("click", () => {
-  void send({ kind: "reset" });
-  nodes.clear();
-  transcriptEl.querySelectorAll(".entry").forEach((n) => n.remove());
-  emptyEl.classList.remove("hidden");
-  privacyAuditEl.classList.add("hidden");
-  setRunning(false);
-});
-
-$("settings").addEventListener("click", () => chrome.runtime.openOptionsPage());
-
-inputEl.addEventListener("keydown", (event) => {
+// Run button / Enter
+runBtn.addEventListener("click", () => void submit());
+taskInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     void submit();
   }
 });
 
-// Grow the composer with its content, up to the CSS max-height.
-inputEl.addEventListener("input", () => {
-  inputEl.style.height = "auto";
-  inputEl.style.height = `${inputEl.scrollHeight}px`;
+// Stop
+stopBtn.addEventListener("click", () => void send({ kind: "stop" }));
+
+// New task
+$("new-task-btn").addEventListener("click", () => {
+  void send({ kind: "reset" });
+  nodes.clear();
+  transcriptEl.querySelectorAll(".entry").forEach((n) => n.remove());
+  emptyEl.classList.remove("hidden");
+  privacyAuditEl.classList.add("hidden");
+  setRunning(false);
+  perceptionCount = 0;
+  egressBadge.textContent = "0 KB EGRESS";
+  perceptionCounter.textContent = "PERCEPTION N° 01";
 });
 
-document.querySelectorAll<HTMLElement>("[data-example]").forEach((el) => {
+// Settings
+$("btn-settings").addEventListener("click", () => chrome.runtime.openOptionsPage());
+
+// Perception view (toggle audit)
+$("btn-perception").addEventListener("click", () => {
+  privacyAuditEl.classList.toggle("hidden");
+});
+
+// ─── Quick Actions ─────────────────────────────────────────────────────────
+
+document.querySelectorAll<HTMLElement>("[data-action]").forEach((el) => {
   el.addEventListener("click", () => {
-    inputEl.value = el.dataset.example ?? "";
-    inputEl.focus();
+    const action = el.dataset.action;
+    const taskMap: Record<string, string> = {
+      "fill-form": "Fill all visible form fields on this page with appropriate data",
+      "extract-data": "Extract all visible data from this page and list it",
+      "scan-pii": "Scan this page for any PII (passwords, IDs, emails, phone numbers) and report what you find",
+      "click-target": "Identify and click the primary action button on this page",
+    };
+    void submit(taskMap[action ?? ""] ?? "Do something on this page");
   });
 });
 
-// The panel can be reopened mid-run — rebuild from the worker's transcript.
+// ─── Context Presets ───────────────────────────────────────────────────────
+
+document.querySelectorAll<HTMLElement>("[data-preset]").forEach((el) => {
+  el.addEventListener("click", () => {
+    const preset = el.dataset.preset;
+    const presetMap: Record<string, string> = {
+      aadhaar: "Scan this page for Aadhaar numbers (12-digit) and redact them",
+      pan: "Scan this page for PAN card numbers (5 letters + 4 digits + 1 letter) and redact them",
+      contact: "Scan this page for contact information (emails, phone numbers, addresses) and list them",
+    };
+    void submit(presetMap[preset ?? ""] ?? "Scan for PII");
+  });
+});
+
+// ─── Input Auto-grow ───────────────────────────────────────────────────────
+
+taskInput.addEventListener("input", () => {
+  taskInput.style.height = "auto";
+  taskInput.style.height = `${Math.min(taskInput.scrollHeight, 120)}px`;
+});
+
+// ─── Restore State on Reopen ───────────────────────────────────────────────
+
 void (async () => {
   const state = (await chrome.runtime.sendMessage({ kind: "get-state" })) as
     | { transcript: TranscriptEntry[]; running: boolean }
