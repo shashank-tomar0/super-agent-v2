@@ -10,13 +10,19 @@ export function createPlanner(settings: Settings): Planner {
   const apiKey = settings.apiKeys[provider] ?? "";
   const model = settings.models[provider] ?? "";
 
+  if (!model) {
+    throw new PlannerError(`No model chosen for ${provider}. Pick one in the extension options.`);
+  }
+
+  // Ollama runs locally — no API key required.
+  if (provider === "ollama") {
+    return createOpenAIPlanner("ollama", "ollama", model);
+  }
+
   if (!apiKey) {
     throw new PlannerError(
       `No API key set for ${provider}. Open the extension options and add one.`,
     );
-  }
-  if (!model) {
-    throw new PlannerError(`No model chosen for ${provider}. Pick one in the extension options.`);
   }
 
   return provider === "anthropic"

@@ -83,9 +83,19 @@ function renderAll(): void {
   apiKeyEl.placeholder = provider.keyHint;
   modelEl.value = settings.models[settings.provider] ?? provider.defaultModel;
 
+  // Ollama needs no API key — hide the key section.
+  const apiKeySection = apiKeyEl.closest(".section");
+  if (apiKeySection) {
+    (apiKeySection as HTMLElement).style.display = settings.provider === "ollama" ? "none" : "";
+  }
+
   // Hint.
   const hint = $("provider-hint");
-  hint.innerHTML = `Get a key at <a href="${provider.keyUrl}" target="_blank" style="color: var(--accent);">${new URL(provider.keyUrl).host}</a>.`;
+  if (settings.provider === "ollama") {
+    hint.innerHTML = `No key needed — Ollama runs on <a href="http://localhost:11434" target="_blank" style="color: var(--color-teal);">localhost:11434</a>. Pull a model: <code>ollama pull qwen2.5:1.5b</code>`;
+  } else {
+    hint.innerHTML = `Get a key at <a href="${provider.keyUrl}" target="_blank" style="color: var(--accent);">${new URL(provider.keyUrl).host}</a>.`;
+  }
 
   // Agent config.
   maxStepsEl.value = String(settings.maxSteps);
@@ -158,7 +168,8 @@ $("save").addEventListener("click", async () => {
   settings.maxSteps = Math.min(200, Math.max(5, Number(maxStepsEl.value) || 40));
   settings.confirmRisky = confirmRiskyEl.checked;
 
-  if (!settings.apiKeys[settings.provider]) {
+  // Ollama needs no API key.
+  if (!settings.apiKeys[settings.provider] && settings.provider !== "ollama") {
     savedEl.className = "status-msg bad";
     savedEl.textContent = `Add a ${PROVIDERS[settings.provider].label} key before saving.`;
     return;

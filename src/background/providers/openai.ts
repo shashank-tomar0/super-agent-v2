@@ -77,6 +77,7 @@ function toStopReason(raw: string | null | undefined, hasToolCalls: boolean): St
 const ENDPOINTS: Record<Exclude<ProviderId, "anthropic">, string> = {
   openai: "https://api.openai.com/v1",
   openrouter: "https://openrouter.ai/api/v1",
+  ollama: "http://localhost:11434/v1",
 };
 
 /**
@@ -99,7 +100,12 @@ export function createOpenAIPlanner(
         : undefined,
   });
 
-  const label = provider === "openai" ? "OpenAI" : "OpenRouter";
+  const labels: Record<Exclude<ProviderId, "anthropic">, string> = {
+    openai: "OpenAI",
+    openrouter: "OpenRouter",
+    ollama: "Ollama (Local)",
+  };
+  const label = labels[provider];
 
   return {
     label: `${label} ${model}`,
@@ -116,6 +122,7 @@ export function createOpenAIPlanner(
             stream: true,
             // OpenAI renamed this for reasoning models; OpenRouter takes the
             // original name and passes it through to whichever model is behind it.
+            // Ollama uses max_tokens.
             ...(provider === "openai"
               ? { max_completion_tokens: 8000 }
               : { max_tokens: 8000 }),

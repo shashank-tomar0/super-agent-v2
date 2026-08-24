@@ -51,6 +51,25 @@ export const PROVIDERS: Record<ProviderId, ProviderInfo> = {
     ],
     defaultModel: "anthropic/claude-opus-5",
   },
+  ollama: {
+    id: "ollama",
+    label: "Ollama (Local)",
+    keyUrl: "https://ollama.com/download",
+    keyHint: "No key needed — runs locally",
+    suggested: [
+      "qwen2.5:1.5b",
+      "qwen2.5:3b",
+      "qwen2.5:7b",
+      "llama3.2:1b",
+      "llama3.2:3b",
+      "llama3.1:8b",
+      "mistral:7b",
+      "codellama:7b",
+      "phi3:3.8b",
+      "gemma2:9b",
+    ],
+    defaultModel: "qwen2.5:1.5b",
+  },
 };
 
 export const PROVIDER_IDS = Object.keys(PROVIDERS) as ProviderId[];
@@ -65,6 +84,17 @@ export async function listModels(
   provider: ProviderId,
   apiKey: string,
 ): Promise<string[]> {
+  if (provider === "ollama") {
+    // Ollama runs locally — fetch the list of pulled models.
+    const baseUrl = "http://localhost:11434";
+    const response = await fetch(`${baseUrl}/api/tags`);
+    if (!response.ok) throw new Error(`Ollama returned ${response.status} — is Ollama running?`);
+    const body = (await response.json()) as { models?: { name?: string }[] };
+    const models = (body.models ?? []).map((m) => m.name).filter((n): n is string => Boolean(n));
+    if (models.length === 0) throw new Error("No models pulled. Run: ollama pull qwen2.5:1.5b");
+    return models.sort();
+  }
+
   if (provider === "openrouter") {
     // OpenRouter's catalogue is public — no key needed.
     const response = await fetch("https://openrouter.ai/api/v1/models");

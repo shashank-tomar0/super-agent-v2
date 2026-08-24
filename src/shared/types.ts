@@ -196,12 +196,13 @@ export interface PrivacySettings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  provider: "anthropic",
-  apiKeys: { anthropic: "", openai: "", openrouter: "" },
+  provider: "ollama",
+  apiKeys: { anthropic: "", openai: "", openrouter: "", ollama: "" },
   models: {
     anthropic: "claude-opus-5",
     openai: "gpt-5",
     openrouter: "anthropic/claude-opus-5",
+    ollama: "qwen2.5:1.5b",
   },
   maxSteps: 40,
   confirmRisky: true,
