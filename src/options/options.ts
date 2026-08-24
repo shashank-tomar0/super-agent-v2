@@ -6,6 +6,8 @@ import { PROVIDERS, PROVIDER_IDS, listModels } from "../shared/models";
 const $ = <T extends HTMLElement>(id: string): T =>
   document.getElementById(id) as T;
 
+// ─── LLM Provider Elements ──────────────────────────────────────────────────
+
 const tabsEl = $("provider-tabs");
 const providerHint = $("provider-hint");
 const apiKeyEl = $<HTMLInputElement>("apiKey");
@@ -15,6 +17,22 @@ const modelStatus = $("model-status");
 const maxStepsEl = $<HTMLInputElement>("maxSteps");
 const confirmRiskyEl = $<HTMLInputElement>("confirmRisky");
 const refreshBtn = $<HTMLButtonElement>("refresh-models");
+
+// ─── Server Elements ────────────────────────────────────────────────────────
+
+const serverEnabledEl = $<HTMLInputElement>("serverEnabled");
+const serverUrlEl = $<HTMLInputElement>("serverUrl");
+const serverApiKeyEl = $<HTMLInputElement>("serverApiKey");
+const serverStatusEl = $("server-status");
+
+// ─── Privacy Elements ───────────────────────────────────────────────────────
+
+const blurFacesEl = $<HTMLInputElement>("blurFaces");
+const maskCredentialsEl = $<HTMLInputElement>("maskCredentials");
+const tokenizePIIEl = $<HTMLInputElement>("tokenizePII");
+const showRedactionLabelsEl = $<HTMLInputElement>("showRedactionLabels");
+const privacyStatusEl = $("privacy-status");
+
 const savedEl = $("saved");
 
 /** Working copy. Edits to the visible fields are folded in on provider switch. */
@@ -26,6 +44,17 @@ const fetched = new Map<ProviderId, string[]>();
 function captureVisibleFields(): void {
   settings.apiKeys[settings.provider] = apiKeyEl.value.trim();
   settings.models[settings.provider] = modelEl.value.trim();
+
+  // Server settings.
+  settings.server.enabled = serverEnabledEl.checked;
+  settings.server.url = serverUrlEl.value.trim() || "http://localhost:3001";
+  settings.server.apiKey = serverApiKeyEl.value.trim();
+
+  // Privacy settings.
+  settings.privacy.blurFaces = blurFacesEl.checked;
+  settings.privacy.maskCredentials = maskCredentialsEl.checked;
+  settings.privacy.tokenizePII = tokenizePIIEl.checked;
+  settings.privacy.showRedactionLabels = showRedactionLabelsEl.checked;
 }
 
 function renderModelOptions(): void {
@@ -39,9 +68,22 @@ function renderModelOptions(): void {
   }
 }
 
+function updateStatusBadges(): void {
+  serverStatusEl.textContent = settings.server.enabled ? "ON" : "OFF";
+  serverStatusEl.className = `status-badge ${settings.server.enabled ? "active" : "inactive"}`;
+
+  const anyPrivacyOn =
+    settings.privacy.blurFaces ||
+    settings.privacy.maskCredentials ||
+    settings.privacy.tokenizePII;
+  privacyStatusEl.textContent = anyPrivacyOn ? "ACTIVE" : "OFF";
+  privacyStatusEl.className = `status-badge ${anyPrivacyOn ? "active" : "inactive"}`;
+}
+
 function render(): void {
   const provider = PROVIDERS[settings.provider];
 
+  // LLM provider.
   tabsEl.querySelectorAll("button").forEach((button) => {
     button.setAttribute(
       "aria-selected",
@@ -62,8 +104,22 @@ function render(): void {
   maxStepsEl.value = String(settings.maxSteps);
   confirmRiskyEl.checked = settings.confirmRisky;
 
+  // Server.
+  serverEnabledEl.checked = settings.server.enabled;
+  serverUrlEl.value = settings.server.url;
+  serverApiKeyEl.value = settings.server.apiKey;
+
+  // Privacy.
+  blurFacesEl.checked = settings.privacy.blurFaces;
+  maskCredentialsEl.checked = settings.privacy.maskCredentials;
+  tokenizePIIEl.checked = settings.privacy.tokenizePII;
+  showRedactionLabelsEl.checked = settings.privacy.showRedactionLabels;
+
   renderModelOptions();
+  updateStatusBadges();
 }
+
+// ─── Provider Tab Generation ────────────────────────────────────────────────
 
 for (const id of PROVIDER_IDS) {
   const button = document.createElement("button");
@@ -72,7 +128,6 @@ for (const id of PROVIDER_IDS) {
   button.dataset.provider = id;
   button.textContent = PROVIDERS[id].label;
   button.addEventListener("click", () => {
-    // Keep whatever the user typed for the provider they are leaving.
     captureVisibleFields();
     settings.provider = id;
     modelStatus.textContent = "";
@@ -80,6 +135,8 @@ for (const id of PROVIDER_IDS) {
   });
   tabsEl.appendChild(button);
 }
+
+// ─── Event Listeners ────────────────────────────────────────────────────────
 
 refreshBtn.addEventListener("click", async () => {
   const provider = settings.provider;
@@ -99,6 +156,13 @@ refreshBtn.addEventListener("click", async () => {
   }
 });
 
+// Toggle handlers for status badges.
+serverEnabledEl.addEventListener("change", updateStatusBadges);
+blurFacesEl.addEventListener("change", updateStatusBadges);
+maskCredentialsEl.addEventListener("change", updateStatusBadges);
+tokenizePIIEl.addEventListener("change", updateStatusBadges);
+showRedactionLabelsEl.addEventListener("change", updateStatusBadges);
+
 $("save").addEventListener("click", async () => {
   captureVisibleFields();
   settings.maxSteps = Math.min(200, Math.max(5, Number(maxStepsEl.value) || 40));
@@ -115,6 +179,8 @@ $("save").addEventListener("click", async () => {
   savedEl.textContent = "Saved";
   setTimeout(() => (savedEl.textContent = ""), 1800);
 });
+
+// ─── Initialize ─────────────────────────────────────────────────────────────
 
 void (async () => {
   const stored = await chrome.storage.local.get("settings");

@@ -2,11 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>RAIDX Agent — Settings</title>
+    <title>VLEE Agent — Settings</title>
     <link rel="stylesheet" href="styles.css" />
     <style>
       body { height: auto; padding: 28px; max-width: 620px; margin: 0 auto; display: block; }
       h1 { font-size: 18px; margin: 0 0 4px; }
+      h2 { font-size: 15px; margin: 24px 0 8px; padding-top: 16px; border-top: 1px solid var(--border); }
       .sub { color: var(--muted); margin: 0 0 24px; }
       label { display: block; font-weight: 600; margin: 18px 0 4px; }
       .hint { color: var(--muted); font-size: 12.5px; margin: 4px 0 0; }
@@ -34,22 +35,36 @@
       #saved.ok { color: var(--ok); }
       #saved.bad { color: var(--danger); }
       #model-status { min-height: 1.2em; }
+      .toggle-group { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+      .toggle-row { display: flex; align-items: center; gap: 10px; }
+      .toggle-row input[type="checkbox"] { width: auto; }
+      .toggle-row .toggle-label { flex: 1; }
+      .toggle-row .toggle-label strong { display: block; font-size: 13px; }
+      .toggle-row .toggle-label span { color: var(--muted); font-size: 12px; }
+      .status-badge {
+        display: inline-block; padding: 2px 8px; border-radius: 10px;
+        font-size: 11px; font-weight: 600;
+      }
+      .status-badge.active { background: var(--ok); color: #fff; }
+      .status-badge.inactive { background: var(--muted); color: #fff; }
     </style>
   </head>
   <body>
-    <h1>RAIDX Agent</h1>
+    <h1>VLEE Agent</h1>
     <p class="sub">
-      Settings are stored locally in this browser profile. Your key is only ever sent to the
-      provider you selected, as the authorization header on your own API calls.
+      Privacy-preserving vision agent. Settings are stored locally in this browser profile.
+      Your key is only ever sent to the provider you selected.
     </p>
 
+    <!-- ─── LLM Provider ─── -->
+    <h2>🧠 LLM Provider</h2>
     <label>Provider</label>
     <div class="tabs" id="provider-tabs" role="tablist"></div>
     <p class="hint" id="provider-hint"></p>
 
     <label for="apiKey">API key</label>
     <input id="apiKey" type="password" autocomplete="off" spellcheck="false" />
-    <p class="hint">Each provider's key is remembered separately, so switching back does not lose it.</p>
+    <p class="hint">Each provider's key is remembered separately.</p>
 
     <label for="model">Model</label>
     <div class="with-button">
@@ -57,23 +72,73 @@
       <button id="refresh-models" class="ghost" type="button">Refresh list</button>
     </div>
     <datalist id="model-list"></datalist>
-    <p class="hint" id="model-status">
-      Type any model id the provider accepts. The dropdown is a starting point — hit
-      <strong>Refresh list</strong> to pull what your key can actually reach.
-    </p>
+    <p class="hint" id="model-status">Click Refresh to pull live model catalogue.</p>
 
     <label for="maxSteps">Step limit per task</label>
     <input id="maxSteps" type="number" min="5" max="200" />
-    <p class="hint">How many planning turns before the agent gives up. Most real tasks land in 5–15.</p>
 
     <div class="row">
       <input id="confirmRisky" type="checkbox" />
       <label for="confirmRisky">Ask before anything irreversible</label>
     </div>
+
+    <!-- ─── VLEE Server ─── -->
+    <h2>🖥️ VLEE Server <span class="status-badge inactive" id="server-status">OFF</span></h2>
+    <div class="row">
+      <input id="serverEnabled" type="checkbox" />
+      <label for="serverEnabled">Enable VLEE server for VLM processing</label>
+    </div>
     <p class="hint">
-      Purchases, sends, deletes, and form submissions pause for your approval. Credential and
-      payment fields are always refused, whether or not this is on.
+      When enabled, sanitized screenshots + tokenized DOM context are sent to a
+      privacy-preserving VLM server instead of directly to the LLM provider.
     </p>
+
+    <label for="serverUrl">Server URL</label>
+    <input id="serverUrl" type="text" placeholder="http://localhost:3001" />
+    <p class="hint">The VLEE server endpoint. Run <code>npm run dev</code> in the server/ directory.</p>
+
+    <label for="serverApiKey">Server API key (optional)</label>
+    <input id="serverApiKey" type="password" autocomplete="off" placeholder="Leave empty for local server" />
+
+    <!-- ─── Privacy Pipeline ─── -->
+    <h2>🔒 Privacy Pipeline <span class="status-badge active" id="privacy-status">ACTIVE</span></h2>
+    <p class="hint" style="margin-bottom: 12px;">
+      These settings control what happens before any data crosses a network boundary.
+    </p>
+
+    <div class="toggle-group">
+      <div class="toggle-row">
+        <input id="blurFaces" type="checkbox" checked />
+        <div class="toggle-label">
+          <strong>Face Detection & Blur</strong>
+          <span>Detect faces in screenshots and apply Gaussian blur before sending</span>
+        </div>
+      </div>
+
+      <div class="toggle-row">
+        <input id="maskCredentials" type="checkbox" checked />
+        <div class="toggle-label">
+          <strong>Credential Masking</strong>
+          <span>Black out password fields, API keys, and card numbers</span>
+        </div>
+      </div>
+
+      <div class="toggle-row">
+        <input id="tokenizePII" type="checkbox" checked />
+        <div class="toggle-label">
+          <strong>PII Tokenization</strong>
+          <span>Replace Aadhaar, PAN, SSN and other ID numbers with opaque tokens</span>
+        </div>
+      </div>
+
+      <div class="toggle-row">
+        <input id="showRedactionLabels" type="checkbox" />
+        <div class="toggle-label">
+          <strong>Show Redaction Labels</strong>
+          <span>Display "🔴 Face" / "🔒 Password" labels on redacted screenshots (demo mode)</span>
+        </div>
+      </div>
+    </div>
 
     <footer>
       <button id="save" class="primary">Save</button>

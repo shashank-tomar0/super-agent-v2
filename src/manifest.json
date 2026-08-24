@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "RAIDX Agent",
-  "version": "0.1.0",
-  "description": "An autonomous browser agent that perceives the page, plans actions, and carries out multi-step tasks for you.",
+  "name": "VLEE Agent",
+  "version": "1.0.0",
+  "description": "A privacy-preserving vision agent that reads your screen, protects your data, and automates browser tasks.",
   "minimum_chrome_version": "120",
   "permissions": [
     "sidePanel",
@@ -12,6 +12,10 @@
     "activeTab"
   ],
   "host_permissions": ["<all_urls>"],
+  "offscreen": {
+    "reasons": ["WORKERS", "BLOBS"],
+    "matching_manifests": ["offscreen.html"]
+  },
   "background": {
     "service_worker": "service-worker.js",
     "type": "module"
@@ -21,7 +25,7 @@
   },
   "options_page": "options.html",
   "action": {
-    "default_title": "Open RAIDX Agent",
+    "default_title": "Open VLEE Agent",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

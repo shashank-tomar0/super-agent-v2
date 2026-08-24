@@ -1,9 +1,9 @@
 {
-  "name": "raidx-agent",
-  "version": "0.1.0",
+  "name": "vlee-agent",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "RAIDX — an autonomous browser agent for Chrome",
+  "description": "VLEE — a privacy-preserving vision agent for Chrome and Firefox",
   "scripts": {
     "build": "node build.mjs",
     "dev": "node build.mjs --watch",

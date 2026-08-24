@@ -62,13 +62,30 @@ export interface ActionResult {
   detail: string;
   /** Populated when the action changed the page enough to warrant a re-read. */
   snapshot?: PageSnapshot;
+  /** Populated when screenshot capture was requested. */
+  screenshot?: ProcessedScreenshotResult;
+}
+
+/** Screenshot processing result from the privacy pipeline. */
+export interface ProcessedScreenshotResult {
+  redactedDataUrl: string;
+  detections: Array<{
+    kind: string;
+    box?: { x: number; y: number; width: number; height: number };
+    confidence: number;
+    label: string;
+  }>;
+  redactedCount: number;
+  processingTimeMs: number;
 }
 
 /** Messages the content script accepts. */
 export type ContentRequest =
   | { kind: "snapshot" }
   | { kind: "act"; action: AgentAction }
-  | { kind: "ping" };
+  | { kind: "ping" }
+  | { kind: "capture-screenshot" }
+  | { kind: "capture-and-act"; action: AgentAction };
 
 /** A rendered entry in the side panel transcript. */
 export interface TranscriptEntry {
@@ -110,6 +127,30 @@ export interface Settings {
   maxSteps: number;
   /** Ask before click/type on anything that looks irreversible. */
   confirmRisky: boolean;
+  /** VLEE server configuration for privacy-preserving VLM processing. */
+  server: ServerSettings;
+  /** Privacy pipeline configuration. */
+  privacy: PrivacySettings;
+}
+
+export interface ServerSettings {
+  /** Whether to use the VLEE server for VLM processing. */
+  enabled: boolean;
+  /** Server URL (default: http://localhost:3001). */
+  url: string;
+  /** API key for the VLEE server (optional, for authenticated servers). */
+  apiKey: string;
+}
+
+export interface PrivacySettings {
+  /** Enable face detection and blur on screenshots. */
+  blurFaces: boolean;
+  /** Enable credential field masking. */
+  maskCredentials: boolean;
+  /** Enable PII tokenization for DOM values. */
+  tokenizePII: boolean;
+  /** Show redaction labels on screenshots (demo mode). */
+  showRedactionLabels: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -122,6 +163,17 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   maxSteps: 40,
   confirmRisky: true,
+  server: {
+    enabled: false,
+    url: "http://localhost:3001",
+    apiKey: "",
+  },
+  privacy: {
+    blurFaces: true,
+    maskCredentials: true,
+    tokenizePII: true,
+    showRedactionLabels: false,
+  },
 };
 
 /** The shape stored before multi-provider support landed. */
@@ -142,6 +194,8 @@ export function normaliseSettings(stored: unknown): Settings {
     ...raw,
     apiKeys: { ...DEFAULT_SETTINGS.apiKeys, ...(raw.apiKeys ?? {}) },
     models: { ...DEFAULT_SETTINGS.models, ...(raw.models ?? {}) },
+    server: { ...DEFAULT_SETTINGS.server, ...(raw.server ?? {}) },
+    privacy: { ...DEFAULT_SETTINGS.privacy, ...(raw.privacy ?? {}) },
   };
 
   // Pre-multi-provider installs stored a bare Anthropic key and model.

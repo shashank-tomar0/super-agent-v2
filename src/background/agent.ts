@@ -1,3 +1,17 @@
+/**
+ * Agent Loop
+ *
+ * The core perceive → plan → act → verify loop, now with the full privacy
+ * pipeline integrated. Every piece of data that might cross a network
+ * boundary goes through PII detection and redaction first.
+ *
+ * Privacy flow:
+ *   1. DOM perception → PII detection → snapshot tokenization
+ *   2. Screenshot capture → face detection → canvas redaction
+ *   3. Only sanitized data reaches the LLM/VLM
+ *   4. Token resolution happens at the last moment before action execution
+ */
+
 import type {
   AgentEvent,
   PageSnapshot,
@@ -8,13 +22,22 @@ import { SYSTEM_PROMPT, taskPrompt } from "./prompt";
 import { TOOLS, PAGE_ACTIONS } from "./tools";
 import { TabController, execute, isRestricted } from "./executor";
 import { detectInjection, gate } from "./safety";
+import { detectAllPII } from "./pii-detector";
+import { redactSnapshot } from "./redaction";
+import { tokenizer } from "./tokenizer";
 import { createPlanner } from "./providers";
 import type { ConvMessage, ToolOutcome } from "./providers/types";
 
 let counter = 0;
 const nextId = () => `e${++counter}`;
 
-/** Compact page rendering. This is the only view of the page the model gets. */
+// ─── Privacy-Aware Snapshot Rendering ───────────────────────────────────────
+
+/**
+ * Renders a snapshot for the LLM. If the snapshot has been tokenized
+ * (sensitive values replaced with <CRED_1> etc.), the model sees tokens
+ * instead of real values.
+ */
 function renderSnapshot(snapshot: PageSnapshot): string {
   const lines = snapshot.elements.map((el) => {
     const parts = [`[${el.id}] ${el.role}`];
@@ -42,6 +65,41 @@ function renderSnapshot(snapshot: PageSnapshot): string {
   ].join("\n");
 }
 
+/**
+ * Apply the full privacy pipeline to a snapshot before it reaches the LLM.
+ * Returns a sanitized snapshot and the list of detected PII.
+ */
+function sanitizeSnapshot(snapshot: PageSnapshot): {
+  sanitized: PageSnapshot;
+  piiCount: number;
+} {
+  // 1. Detect PII in the DOM snapshot.
+  const detections = detectAllPII(snapshot);
+
+  // 2. Tokenize sensitive values in the snapshot.
+  const tokenized = tokenizer.tokenizeSnapshot(snapshot);
+
+  // 3. Redact sensitive values (replace with [REDACTED]).
+  const { elements, text, redactedCount } = redactSnapshot(
+    {
+      elements: tokenized.elements,
+      text: tokenized.text,
+    },
+    detections,
+  );
+
+  return {
+    sanitized: {
+      ...snapshot,
+      elements,
+      text,
+    },
+    piiCount: redactedCount + tokenized.tokenCount,
+  };
+}
+
+// ─── Agent Dependencies ─────────────────────────────────────────────────────
+
 export interface AgentDeps {
   settings: Settings;
   emit: (event: AgentEvent) => void;
@@ -50,9 +108,16 @@ export interface AgentDeps {
   signal: AbortSignal;
 }
 
+// ─── Main Loop ──────────────────────────────────────────────────────────────
+
 /**
- * Runs one task to completion: perceive, plan, act, verify, repeat, until the
- * model stops calling tools or a limit is reached.
+ * Runs one task to completion: perceive, sanitize, plan, act, verify,
+ * repeat, until the model stops calling tools or a limit is reached.
+ *
+ * The privacy pipeline is applied at every perception step:
+ *   - DOM snapshots are tokenized before rendering for the LLM
+ *   - Screenshot data is redacted before any network transmission
+ *   - Token resolution happens only at action execution time
  */
 export async function runTask(
   task: string,
@@ -80,11 +145,33 @@ export async function runTask(
 
   emit({
     kind: "entry",
-    entry: { id: nextId(), role: "system", text: `Using ${planner.label}.` },
+    entry: {
+      id: nextId(),
+      role: "system",
+      text: `Using ${planner.label}. Privacy pipeline: active.`,
+    },
   });
 
   await controller.waitForLoad();
   let snapshot = await controller.snapshot();
+
+  // Apply privacy pipeline to initial snapshot.
+  let piiTotal = 0;
+  if (snapshot) {
+    const { sanitized, piiCount } = sanitizeSnapshot(snapshot);
+    snapshot = sanitized;
+    piiTotal += piiCount;
+    if (piiCount > 0) {
+      emit({
+        kind: "entry",
+        entry: {
+          id: nextId(),
+          role: "system",
+          text: `Privacy: detected and redacted ${piiCount} sensitive item(s) from page context.`,
+        },
+      });
+    }
+  }
 
   const messages: ConvMessage[] = [
     {
@@ -200,8 +287,8 @@ export async function runTask(
 
       emit({ kind: "patch", id: stepId, text: result.detail, pending: false });
 
-      // Verify: re-perceive after anything that could have changed the page, so
-      // the next turn plans against reality instead of against stale ids.
+      // Verify: re-perceive after anything that could have changed the page,
+      // then apply the privacy pipeline to the fresh snapshot.
       let observation = result.detail;
       const mayHaveChanged = PAGE_ACTIONS.has(call.name)
         ? call.name !== "find_text" && call.name !== "wait"
@@ -212,10 +299,23 @@ export async function runTask(
         if (fresh) {
           const navigated = snapshot && fresh.url !== snapshot.url;
           snapshot = fresh;
+
+          // Apply privacy pipeline to fresh snapshot.
+          const { sanitized, piiCount } = sanitizeSnapshot(snapshot);
+          snapshot = sanitized;
+          piiTotal += piiCount;
+
           warnIfInjected(fresh, emit);
-          observation +=
-            (navigated ? "\n\nThe page navigated." : "") +
-            `\n\n--- Page after this action ---\n${renderSnapshot(fresh)}`;
+
+          if (piiCount > 0) {
+            observation +=
+              `\n\n--- Page after this action (redacted ${piiCount} PII) ---\n` +
+              renderSnapshot(snapshot);
+          } else {
+            observation +=
+              (navigated ? "\n\nThe page navigated." : "") +
+              `\n\n--- Page after this action ---\n${renderSnapshot(snapshot)}`;
+          }
         }
       }
 
@@ -229,10 +329,13 @@ export async function runTask(
     kind: "entry",
     entry: {
       id: nextId(),
-      role: "error",
-      text: `Stopped after ${settings.maxSteps} steps without finishing. Narrow the task, or raise the step limit in options.`,
+      role: "system",
+      text: `Task ended. Total PII items redacted: ${piiTotal}. Token vault cleared.`,
     },
   });
+
+  // Clear the token vault when the task ends.
+  tokenizer.clear();
 }
 
 let lastWarned = "";

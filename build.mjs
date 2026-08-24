@@ -5,13 +5,24 @@ const watch = process.argv.includes("--watch");
 
 await rm("dist", { recursive: true, force: true });
 await mkdir("dist", { recursive: true });
+await mkdir("dist/offscreen", { recursive: true });
+await mkdir("dist/models", { recursive: true });
 
 // Static assets are copied verbatim; only the TS entrypoints get bundled.
 await cp("src/manifest.json", "dist/manifest.json");
 await cp("src/sidepanel/index.html", "dist/sidepanel.html");
 await cp("src/sidepanel/styles.css", "dist/styles.css");
 await cp("src/options/index.html", "dist/options.html");
+await cp("src/offscreen/index.html", "dist/offscreen.html");
 await cp("icons", "dist/icons", { recursive: true });
+
+// Copy model files if they exist.
+try {
+  await cp("models", "dist/models", { recursive: true });
+} catch {
+  // Models directory may not exist yet — that's fine, the extension
+  // degrades gracefully to DOM-only perception.
+}
 
 /**
  * The Anthropic SDK statically imports node:fs / node:path for its file-based
@@ -43,10 +54,13 @@ const shared = {
   sourcemap: watch ? "inline" : false,
   minify: !watch,
   logLevel: "info",
+  define: {
+    "process.env.NODE_ENV": watch ? '"development"' : '"production"',
+  },
 };
 
 const builds = [
-  // Service worker and the two extension pages load as ES modules.
+  // Service worker, side panel, options, and offscreen document load as ES modules.
   {
     ...shared,
     format: "esm",
@@ -54,6 +68,7 @@ const builds = [
       "service-worker": "src/background/service-worker.ts",
       sidepanel: "src/sidepanel/sidepanel.ts",
       options: "src/options/options.ts",
+      "offscreen/offscreen": "src/offscreen/offscreen.ts",
     },
   },
   // Content scripts are not modules in MV3 — must be a self-contained IIFE.
@@ -72,4 +87,5 @@ if (watch) {
   console.log("watching…");
 } else {
   await Promise.all(builds.map((options) => esbuild.build(options)));
+  console.log("build complete");
 }

@@ -1,11 +1,48 @@
-# RAIDX Agent
+# VLEE Agent
 
-A Chrome extension that operates the browser for you. You give it a goal in the
-side panel; it reads the page, decides on one action, takes it, looks at what
-changed, and repeats until the task is done — the same loop Comet and Atlas run.
+**VLEE** (Vision-Language Edge Engine) — a privacy-preserving browser agent that runs
+visual perception models on your device, detects and redacts PII before anything
+crosses the wire, and delegates reasoning to a server-side VLM that only ever
+sees sanitized data.
 
-This is the **baseline agent**. The PII tokenization layer from the SIH
-architecture is not in it yet; see [Where the privacy layer goes](#where-the-privacy-layer-goes).
+Built for **SIH 2026 Problem Statement #26171**:
+*On-device Visual Perception for Light-weight Browser Agents* (ISRO).
+
+## Architecture
+
+```
+┌─────────────────────── CLIENT (Extension) ───────────────────────┐
+│                                                                  │
+│  Side Panel ──task──▶ Service Worker ──▶ Planning Loop           │
+│       ▲                     │                                    │
+│       └── events ───────────┘                                    │
+│                              │                                   │
+│  Content Script              │                                   │
+│  ├── perceive.ts (DOM)      │                                    │
+│  ├── screenshot.ts (tab capture)                                │
+│  ├── pii-detector.ts (on-device: face + credential)             │
+│  ├── redaction.ts (canvas blur/mask)                            │
+│  └── act.ts (real input replay)                                 │
+│                                                                  │
+│  Vision Pipeline (WebGPU / ONNX Runtime Web)                    │
+│  ├── MobileNet ViT — screen understanding                       │
+│  ├── Transformers.js — local tokenization                       │
+│  └── On-device PII classification                               │
+│                                                                  │
+│  Offscreen Document (for WebGPU inference)                       │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+                              │
+                   Sanitized screenshot + DOM context
+                              │
+                              ▼
+┌─────────────────────── SERVER ───────────────────────────────────┐
+│  Express/Fastify server with                                    │
+│  ├── VLM (Qwen2-VL / LLaVA) — understands sanitized visuals    │
+│  ├── Action planner — returns UI commands                       │
+│  └── Never sees unredacted data                                 │
+└──────────────────────────────────────────────────────────────────┘
+```
 
 ## Install
 
@@ -22,14 +59,10 @@ provider you selected.
 
 | Provider | Key from | Notes |
 |---|---|---|
-| Anthropic | console.anthropic.com | Default. Native tool-use. |
+| Anthropic | console.anthropic.com | Native tool-use. |
 | OpenAI | platform.openai.com | Chat Completions with function calling. |
 | OpenRouter | openrouter.ai | One key, 400+ models across vendors. |
-
-Each provider's key and chosen model are remembered separately, so switching
-back and forth costs nothing. The model field is free text — type any id the
-provider accepts — and **Refresh list** pulls the live catalogue from the
-provider so the bundled suggestions can't go stale on you.
+| VLEE Server | Self-hosted | Privacy-preserving VLM processing. |
 
 Click the toolbar icon to open the side panel, then give it a task.
 
@@ -38,67 +71,52 @@ extension card to pick up changes.
 
 ## How it works
 
-```
-side panel ──task──▶ service worker ──▶ Claude ──tool call──▶ content script ──▶ page
-     ▲                     │                ▲                        │
-     └──── events ─────────┘                └──── fresh snapshot ────┘
-```
+### Perception Layer (Dual-Channel)
 
-Three isolated realms, talking only through the message types in
-[`src/shared/types.ts`](src/shared/types.ts):
+1. **DOM Perception** (`perceive.ts`): Flattens the page into numbered interactive
+   elements with accessible names. This is the primary channel — fast, structured,
+   and PII-aware.
 
-- **Content script** ([`perceive.ts`](src/content/perceive.ts),
-  [`act.ts`](src/content/act.ts)) is the only code that touches the DOM. It
-  flattens the page into a numbered list of interactive elements with accessible
-  names, and executes clicks and keystrokes.
-- **Service worker** ([`agent.ts`](src/background/agent.ts)) runs the planning
-  loop and gates every action before it happens. It talks to a `Planner`
-  interface, not to a vendor — the adapters in
-  [`providers/`](src/background/providers) normalise Anthropic's content blocks
-  and OpenAI's `tool_calls` into one shape, so the loop has no idea which
-  provider is behind it.
-- **Side panel** ([`sidepanel.ts`](src/sidepanel/sidepanel.ts)) streams the
-  transcript and prompts for confirmations.
+2. **Visual Perception** (`screenshot.ts`): Captures the visible tab via
+   `chrome.tabs.captureVisibleTab`, sends it to the offscreen document for
+   on-device processing.
 
-### The four decisions that make it work
+### Privacy Pipeline
 
-**The model sees element ids, never selectors.** Each page read returns
-`[12] link "Sign in" (href=github.com/login)`. The planner picks id 12; the
-content script resolves it against the registry from that same read. The model
-never writes a CSS selector or an XPath, so it cannot invent one.
+Every piece of data that might cross a network boundary goes through:
 
-**Ids die when the page changes.** After every action that could mutate the
-page, the worker re-perceives and appends the fresh snapshot to the tool result.
-A stale id resolves to nothing and returns an error telling the planner to read
-the page again — rather than silently clicking the wrong element.
+1. **PII Detection** (`pii-detector.ts`):
+   - **Face detection**: TensorFlow.js Face Landmarks Detection model
+   - **Credential scanning**: Regex patterns for passwords, API keys, card numbers
+   - **ID number detection**: Aadhaar, PAN, SSN, passport patterns
+   - **DOM-based PII**: Labels, placeholders, and values matching sensitive patterns
 
-**Actions are replayed as real input.** A bare `el.click()` and `el.value = x`
-are ignored by React and most modern frameworks. `act.ts` replays the full
-pointer sequence, and writes input values through the native prototype setter so
-React's value tracker doesn't swallow the event. This is verified against a
-React-controlled input, not assumed.
+2. **Redaction Engine** (`redaction.ts`):
+   - Canvas-based Gaussian blur over detected face regions
+   - Black-out masking for credential fields and ID numbers
+   - Semantic obfuscation (replacing text with placeholders)
+   - All redaction happens client-side before any network request
 
-**The gate runs before the action, not inside the prompt.**
-[`safety.ts`](src/background/safety.ts) inspects every action against the
-snapshot the model was looking at. Password, card, and ID fields are refused
-outright — the prompt says so too, but the prompt is not the enforcement.
-Irreversible-looking clicks pause for the user.
+3. **Tokenization** (`tokenize.ts`):
+   - Sensitive values are replaced with `<ORG_3>`, `<PERSON_5>` tokens
+   - Token↔value vault held in memory only (never persisted)
+   - Server can reference tokens but never resolve them
 
-## What it will not do
+### Vision Model (On-Device)
 
-Refused in code, regardless of what the task says:
+Runs via WebGPU through ONNX Runtime Web in an offscreen document:
 
-- Typing into password, CVV, card-number, OTP, Aadhaar, PAN, or API-key fields
-- Typing a value that pattern-matches a key or a card number
+- **MobileNet ViT** — lightweight visual transformer for screen understanding
+- **Transformers.js** — local tokenizer for text processing
+- **TensorFlow.js Face Detection** — real-time face detection for redaction
 
-Paused for your approval (when *Ask before anything irreversible* is on):
+### Server Component
 
-- Clicking anything labelled buy, pay, send, post, delete, confirm, subscribe,
-  sign up, or accept
-- Submitting a form that isn't a search
+The VLEE server (`/server`) receives only sanitized data:
 
-Page text is treated as data. If a page contains text addressed to an AI agent,
-the agent flags it in the transcript and keeps going rather than obeying it.
+- Redacted screenshots (faces blurred, credentials blacked)
+- Tokenized DOM context (PII replaced with opaque tokens)
+- Returns actionable commands: click, type, scroll, navigate
 
 ## Layout
 
@@ -106,49 +124,68 @@ the agent flags it in the transcript and keeps going rather than obeying it.
 src/
   manifest.json
   background/
-    service-worker.ts   message routing, transcript, run lifecycle
-    agent.ts            the perceive → plan → act → verify loop
+    service-worker.ts    message routing, transcript, run lifecycle
+    agent.ts             the perceive → plan → act → verify loop
     providers/
-      types.ts          provider-neutral messages, tools, and turns
-      anthropic.ts      content blocks ⇄ canonical
-      openai.ts         tool_calls ⇄ canonical (OpenAI and OpenRouter)
-      index.ts          picks the planner from settings
-    tools.ts            the agent's entire action surface
-    prompt.ts           system prompt
-    executor.ts         routes actions to the page or the tabs API
-    safety.ts           credential refusal, confirmation gate, injection detection
+      types.ts           provider-neutral messages, tools, and turns
+      anthropic.ts       content blocks ⇄ canonical
+      openai.ts          tool_calls ⇄ canonical (OpenAI and OpenRouter)
+      index.ts           picks the planner from settings
+    tools.ts             the agent's entire action surface
+    prompt.ts            system prompt
+    executor.ts          routes actions to the page or the tabs API
+    safety.ts            credential refusal, confirmation gate, injection detection
+    pii-detector.ts      face detection + credential/ID pattern scanning
+    redaction.ts         canvas-based blur/mask engine
+    tokenizer.ts         PII ↔ opaque token mapping
   content/
-    perceive.ts         DOM → numbered element list
-    act.ts              element id → real user input
-    content.ts          message handler
-  sidepanel/            transcript UI
-  options/              provider, keys, model, and preferences
+    perceive.ts          DOM → numbered element list
+    screenshot.ts        tab capture → offscreen processing
+    act.ts               element id → real user input
+    content.ts           message handler
+  offscreen/
+    index.html           offscreen document for WebGPU inference
+    vision.ts            ONNX/ViT model runner
+  sidepanel/             transcript UI
+  options/               provider, keys, model, preferences, server config
   shared/
-    types.ts            wire types and settings (with legacy migration)
-    models.ts           provider catalogue and live model listing
+    types.ts             wire types and settings
+    models.ts            provider catalogue and live model listing
+  server/                Express server with VLM
+    index.ts
+    vlm.ts               VLM inference pipeline
+    routes.ts            API endpoints
 ```
 
-## Where the privacy layer goes
+## Privacy Guarantees
 
-The SIH design tokenizes PII before anything crosses the wire. Two seams in this
-codebase are where that lands, and both already exist as single choke points:
+- **No screenshots leave the device unredacted** — face detection + PII masking
+  happens in the offscreen document before any network request
+- **Server never sees raw credentials** — DOM tokenization replaces all sensitive
+  values with opaque tokens before transmission
+- **Token vault is ephemeral** — lives in memory only, never persisted to storage
+- **Local inference first** — ViT model processes screen state on-device; only
+  structured, sanitized context reaches the server
+- **Gate runs before every action** — credential fields are blocked at code level,
+  not just prompt level
 
-- `renderSnapshot()` in [`agent.ts`](src/background/agent.ts) is the only place
-  a page becomes text for the model. Detection and tokenization go here: the
-  snapshot goes in, `<ORG_3>`-shaped tokens come out, and the vault holds the
-  mapping.
-- The `gate()` call in the same file is the only place an action is inspected
-  before it runs. Token → real value resolution goes here, at the last possible
-  moment before `execute()`.
+## What it will not do
 
-Nothing else needs to change: the planner already reasons over opaque ids rather
-than page content, which is most of the way to reasoning over opaque tokens.
+Refused in code, regardless of what the task says:
+
+- Typing into password, CVV, card-number, OTP, Aadhaar, PAN, or API-key fields
+- Typing a value that pattern-matches a key or a card number
+- Sending unredacted screenshots to the server
+
+Paused for your approval (when *Ask before anything irreversible* is on):
+
+- Clicking anything labelled buy, pay, send, post, delete, confirm, subscribe,
+  sign up, or accept
+- Submitting a form that isn't a search
 
 ## Known limits
 
-- One frame per tab — the content script does not run in iframes, so agents
-  cannot act inside embedded checkout or payment widgets.
-- Text and DOM only; there is no screenshot channel yet, so canvas-rendered and
-  image-only UI is invisible to the planner.
-- Chrome's own pages (`chrome://`, the Web Store) are off limits to all
-  extensions, and the agent says so rather than failing quietly.
+- One frame per tab — the content script does not run in iframes
+- Chrome's own pages (`chrome://`, the Web Store) are off limits
+- Face detection accuracy depends on lighting and angle in screenshots
+- WebGPU availability varies by browser/OS
