@@ -171,6 +171,8 @@ interface AuditEntry {
 let auditEntries: AuditEntry[] = [];
 let taskStartTime = 0;
 
+const MAX_AUDIT_ENTRIES = 10;
+
 function recordAuditEntry(data: {
   original?: string;
   redacted?: string;
@@ -178,6 +180,13 @@ function recordAuditEntry(data: {
   tokens: Array<{ token: string; kind: string }>;
   redactedCount: number;
 }): void {
+  // Limit stored entries to prevent memory bloat (each base64 screenshot ~1-5MB).
+  if (auditEntries.length >= MAX_AUDIT_ENTRIES) {
+    // Keep the first entry (initial page) and drop older middle entries.
+    const first = auditEntries[0];
+    auditEntries = [first, ...auditEntries.slice(auditEntries.length - MAX_AUDIT_ENTRIES + 2)];
+  }
+
   auditEntries.push({
     ...data,
     timestamp: Date.now(),

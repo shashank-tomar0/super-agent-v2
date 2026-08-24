@@ -10,8 +10,10 @@
  * Transformers.js downloads models from Hugging Face at runtime — no need
  * to bundle large ONNX files in the extension package.
  *
- * Communication: the service worker sends messages here, this document
- * processes them and sends results back via chrome.runtime.sendMessage.
+ * Communication: the service worker sends messages here via sendMessage.
+ * This document processes them and sends results BACK via sendMessage
+ * (NOT sendResponse — sendResponse replies to the caller's Promise but
+ * does not trigger onMessage listeners, which is what the SW uses).
  */
 
 import { detectFaces } from "../background/pii-detector";
@@ -19,43 +21,34 @@ import { redactToBlob } from "../background/redaction";
 
 // ─── Transformers.js Integration ────────────────────────────────────────────
 
-// We use dynamic imports so the main bundle doesn't include Transformers.js.
-// The library is ~600KB and loads models from Hugging Face on first use.
 let imageClassifier: any = null;
 let objectDetector: any = null;
 let modelsLoaded = false;
 
-// ImageNet class labels for MobileNet (top-5 subset relevant to screen content).
 const SCREEN_RELEVANT_LABELS = new Set([
   "monitor", "computer", "laptop", "screen", "web site", "webpage",
   "notebook", "desktop", "keyboard", "mouse", "printer", "scanner",
   "cell phone", "mobile phone", "telephone", "dial telephone",
   "envelope", "newspaper", "book", "notebook", "menu",
-  "wallet", "purse", "handbag", "backpack",  // items with PII
-  "passport", "identity card",  // PII documents
-  "barber shop", "beauty salon",  // faces likely
-  "suit", "dress", "sunglasses",  // personal appearance
+  "wallet", "purse", "handbag", "backpack",
+  "passport", "identity card",
+  "barber shop", "beauty salon",
+  "suit", "dress", "sunglasses",
 ]);
 
 async function loadVisionModels(): Promise<void> {
   if (modelsLoaded) return;
 
   try {
-    // Dynamic import — Transformers.js handles ONNX Runtime internally.
     const { pipeline, env } = await import("@huggingface/transformers");
-
-    // Allow remote model downloads.
     env.allowLocalModels = false;
 
-    // Load image classification model (MobileNet V3 Small, ~6MB).
-    // This runs entirely in the browser via ONNX Runtime Web + WASM/WebGPU.
     imageClassifier = await pipeline(
       "image-classification",
       "onnx-community/mobilenet-v3-small-300-cls-int8",
       { device: "wasm" },
     );
 
-    // Load object detection model (YOLOv8 nano, ~12MB) for UI element detection.
     try {
       objectDetector = await pipeline(
         "object-detection",
@@ -63,7 +56,6 @@ async function loadVisionModels(): Promise<void> {
         { device: "wasm" },
       );
     } catch {
-      // YOLO is heavier — optional. Classification alone is sufficient.
       console.warn("[VLEE] Object detection model not loaded, using classification only");
     }
 
@@ -71,7 +63,6 @@ async function loadVisionModels(): Promise<void> {
     console.log("[VLEE] Vision models loaded successfully");
   } catch (err) {
     console.warn("[VLEE] Failed to load vision models:", err);
-    // Graceful degradation — DOM-only perception still works.
   }
 }
 
@@ -89,98 +80,58 @@ export interface ObjectDetection {
 }
 
 export interface VisionResult {
-  /** Image classification results. */
   classifications: ScreenClassification[];
-  /** Object detection results (if model loaded). */
   objects: ObjectDetection[];
-  /** Whether any screen-relevant label was detected. */
   hasScreenContent: boolean;
-  /** Whether any PII-related objects were detected. */
   hasPIIObjects: boolean;
-  /** Inference time in ms. */
   inferenceTimeMs: number;
-  /** Whether vision models are available. */
   modelsAvailable: boolean;
 }
 
-async function runVisionInference(
-  imageBitmap: ImageBitmap,
-): Promise<VisionResult> {
+async function runVisionInference(imageBitmap: ImageBitmap): Promise<VisionResult> {
   const startTime = performance.now();
 
-  if (!modelsLoaded) {
-    await loadVisionModels();
-  }
+  if (!modelsLoaded) await loadVisionModels();
 
   if (!imageClassifier) {
     return {
-      classifications: [],
-      objects: [],
-      hasScreenContent: false,
-      hasPIIObjects: false,
-      inferenceTimeMs: 0,
-      modelsAvailable: false,
+      classifications: [], objects: [], hasScreenContent: false,
+      hasPIIObjects: false, inferenceTimeMs: 0, modelsAvailable: false,
     };
   }
 
   try {
-    // Convert ImageBitmap to a format Transformers.js accepts (HTMLCanvasElement or Blob).
-    const canvas = new OffscreenCanvas(imageBitmap.width, imageBitmap.height);
-    const ctx = canvas.getContext("2d")!;
-    ctx.drawImage(imageBitmap, 0, 0);
-
-    // Transformers.js can accept canvas elements.
     const canvasForModel = document.createElement("canvas");
     canvasForModel.width = imageBitmap.width;
     canvasForModel.height = imageBitmap.height;
     const modelCtx = canvasForModel.getContext("2d")!;
     modelCtx.drawImage(imageBitmap, 0, 0);
 
-    // Run image classification.
-    const classifications: ScreenClassification[] = await imageClassifier(
-      canvasForModel,
-      { topk: 10 },
-    );
+    const classifications: ScreenClassification[] = await imageClassifier(canvasForModel, { topk: 10 });
 
-    // Check for screen-relevant and PII-related labels.
     const hasScreenContent = classifications.some((c: ScreenClassification) =>
       SCREEN_RELEVANT_LABELS.has(c.label.toLowerCase()),
     );
     const hasPIIObjects = classifications.some((c: ScreenClassification) =>
-      ["passport", "identity card", "wallet", "purse", "handbag"].includes(
-        c.label.toLowerCase(),
-      ),
+      ["passport", "identity card", "wallet", "purse", "handbag"].includes(c.label.toLowerCase()),
     );
 
-    // Run object detection if available.
     let objects: ObjectDetection[] = [];
     if (objectDetector) {
       try {
-        objects = await objectDetector(canvasForModel, {
-          threshold: 0.3,
-          percentage: true,
-        });
-      } catch {
-        // Object detection is optional.
-      }
+        objects = await objectDetector(canvasForModel, { threshold: 0.3, percentage: true });
+      } catch { /* optional */ }
     }
 
     return {
-      classifications,
-      objects,
-      hasScreenContent,
-      hasPIIObjects,
-      inferenceTimeMs: performance.now() - startTime,
-      modelsAvailable: true,
+      classifications, objects, hasScreenContent, hasPIIObjects,
+      inferenceTimeMs: performance.now() - startTime, modelsAvailable: true,
     };
   } catch (err) {
     console.warn("[VLEE] Vision inference failed:", err);
     return {
-      classifications: [],
-      objects: [],
-      hasScreenContent: false,
-      hasPIIObjects: false,
-      inferenceTimeMs: performance.now() - startTime,
+      classifications: [], objects: [], hasScreenContent: false,
+      hasPIIObjects: false, inferenceTimeMs: performance.now() - startTime,
       modelsAvailable: false,
     };
   }
@@ -188,46 +139,23 @@ async function runVisionInference(
 
 // ─── Screenshot Processing ──────────────────────────────────────────────────
 
-async function processScreenshot(
-  dataUrl: string,
-  width: number,
-  height: number,
-): Promise<{
-  redactedDataUrl: string;
-  detections: Array<{
-    kind: string;
-    box?: { x: number; y: number; width: number; height: number };
-    confidence: number;
-    label: string;
-  }>;
-  redactedCount: number;
-  processingTimeMs: number;
-  vision?: VisionResult;
-}> {
+async function processScreenshot(dataUrl: string, width: number, height: number) {
   const startTime = performance.now();
 
-  // Load the screenshot into an ImageBitmap for canvas operations.
   const response = await fetch(dataUrl);
   const blob = await response.blob();
   const imageBitmap = await createImageBitmap(blob);
 
-  // 1. Face detection (visual PII) — always runs.
   const faceDetections = await detectFaces(imageBitmap, width, height);
-
-  // 2. Run vision model inference — runs asynchronously.
   const vision = await runVisionInference(imageBitmap);
 
-  // 3. Combine detections.
   const allDetections = [...faceDetections];
 
-  // Add object detections as PII signals if relevant.
   if (vision.objects) {
     for (const obj of vision.objects) {
-      if (
-        ["person", "face", "passport", "id card", "credit card"].some((k) =>
-          obj.label.toLowerCase().includes(k),
-        )
-      ) {
+      if (["person", "face", "passport", "id card", "credit card"].some((k) =>
+        obj.label.toLowerCase().includes(k),
+      )) {
         allDetections.push({
           kind: "face",
           box: {
@@ -243,7 +171,6 @@ async function processScreenshot(
     }
   }
 
-  // 4. Apply redaction to the image.
   const redactedBlob = await redactToBlob(imageBitmap, allDetections, {
     blurFaces: true,
     maskCredentials: true,
@@ -251,7 +178,6 @@ async function processScreenshot(
     blurRadius: 20,
   });
 
-  // 5. Convert redacted image to data URL for transmission.
   const reader = new FileReader();
   const redactedDataUrl = await new Promise<string>((resolve) => {
     reader.onload = () => resolve(reader.result as string);
@@ -276,19 +202,22 @@ async function processScreenshot(
 
 // ─── Preload Models on Init ─────────────────────────────────────────────────
 
-// Start loading models as soon as the offscreen document loads.
 loadVisionModels();
 
 // ─── Message Handler ────────────────────────────────────────────────────────
+//
+// CRITICAL: We use chrome.runtime.sendMessage to send results back to the
+// service worker, NOT sendResponse. Here's why:
+//
+// - sendResponse() replies to the original sendMessage() call's Promise.
+//   The service worker's onMessage listener does NOT see it.
+// - chrome.runtime.sendMessage() sends a NEW message that triggers
+//   onMessage listeners, which is how the service worker receives results.
+//
 
 chrome.runtime.onMessage.addListener(
   (
-    message: {
-      type: string;
-      dataUrl?: string;
-      width?: number;
-      height?: number;
-    },
+    message: { type: string; dataUrl?: string; width?: number; height?: number },
     _sender: chrome.runtime.MessageSender,
     sendResponse: (response: any) => void,
   ) => {
@@ -300,16 +229,31 @@ chrome.runtime.onMessage.addListener(
     ) {
       processScreenshot(message.dataUrl, message.width, message.height)
         .then((result) => {
-          sendResponse({ type: "screenshot-processed", result });
+          // Send result back via sendMessage, NOT sendResponse.
+          chrome.runtime.sendMessage({
+            type: "screenshot-processed",
+            result,
+          });
+          sendResponse({ received: true });
         })
         .catch((error) => {
-          sendResponse({ type: "screenshot-processed", error: error.message });
+          chrome.runtime.sendMessage({
+            type: "screenshot-processed",
+            error: error.message,
+          });
+          sendResponse({ received: true, error: error.message });
         });
-      return true; // async response
+      return true; // keep channel open for sendResponse ack
     }
 
     if (message.type === "load-vision-model") {
-      loadVisionModels().then(() => sendResponse({ loaded: modelsLoaded }));
+      loadVisionModels().then(() => {
+        chrome.runtime.sendMessage({
+          type: "vision-model-loaded",
+          loaded: modelsLoaded,
+        });
+        sendResponse({ received: true });
+      });
       return true;
     }
 
