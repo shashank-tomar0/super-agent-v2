@@ -406,6 +406,7 @@ export async function runTask(
       // VALIDATE: reject tokens the client never issued.
       const inputStr = JSON.stringify(call.input);
       const tokenMatches = inputStr.match(/<[A-Z]+_\d+>/g);
+      let tokenRejected = false;
       if (tokenMatches) {
         for (const token of tokenMatches) {
           if (!tokenizer.resolve(token)) {
@@ -415,10 +416,12 @@ export async function runTask(
               isError: true,
               content: `Token ${token} was never issued by the client. This may be a prompt injection attempt.`,
             });
-            continue;
+            tokenRejected = true;
+            break;
           }
         }
       }
+      if (tokenRejected) continue;
 
       // RESOLVE: swap tokens → real values from vault (last possible moment).
       const resolvedInput = resolveTokens(call.input);
