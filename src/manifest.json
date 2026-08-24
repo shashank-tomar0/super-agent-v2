@@ -9,13 +9,10 @@
     "storage",
     "tabs",
     "scripting",
-    "activeTab"
+    "activeTab",
+    "offscreen"
   ],
   "host_permissions": ["<all_urls>"],
-  "offscreen": {
-    "reasons": ["WORKERS", "BLOBS"],
-    "matching_manifests": ["offscreen.html"]
-  },
   "background": {
     "service_worker": "service-worker.js",
     "type": "module"
