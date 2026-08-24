@@ -7,6 +7,7 @@ import type {
 } from "../shared/types";
 import { normaliseSettings } from "../shared/types";
 import { runTask } from "./agent";
+import { saveSession, getSessions, deleteSession, clearHistory } from "./history";
 
 // The side panel can be closed and reopened mid-run, so the transcript lives
 // here rather than in the panel's own memory.
@@ -314,6 +315,23 @@ async function start(task: string, tabId: number): Promise<void> {
   } finally {
     running = false;
     abort = null;
+
+    // Save session to history.
+    const lastEntry = transcript.filter((e) => e.role === "assistant").pop();
+    const hasError = transcript.some((e) => e.role === "error");
+    const wasAborted = abort === null && !hasError;
+    await saveSession({
+      id: `session-${taskStartTime}`,
+      task,
+      startedAt: taskStartTime,
+      completedAt: Date.now(),
+      status: hasError ? "failed" : wasAborted ? "stopped" : "completed",
+      transcript: [...transcript],
+      summary: lastEntry?.text?.slice(0, 200) ?? "Task completed",
+      piiRedacted: auditEntries.reduce((sum, e) => sum + e.redactedCount, 0),
+      durationMs: Date.now() - taskStartTime,
+    });
+
     // Emit the privacy audit before status so the panel can render it.
     if (auditEntries.length > 0) emitPrivacyAudit();
     // Nothing is waiting on an answer once the run is over.
@@ -362,6 +380,20 @@ chrome.runtime.onMessage.addListener(
       case "get-state":
         sendResponse({ transcript, running });
         return false;
+
+      case "get-history":
+        void getSessions().then((sessions) => sendResponse({ sessions }));
+        return true;
+
+      case "delete-history": {
+        const histCmd = command as { kind: string; sessionId?: string; clearAll?: boolean };
+        if (histCmd.clearAll) {
+          void clearHistory().then(() => sendResponse({ ok: true }));
+        } else if (histCmd.sessionId) {
+          void deleteSession(histCmd.sessionId).then(() => sendResponse({ ok: true }));
+        }
+        return true;
+      }
 
       default:
         return false;

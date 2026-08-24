@@ -155,7 +155,9 @@ export type PanelCommand =
   | { kind: "stop" }
   | { kind: "reset" }
   | { kind: "confirm-reply"; id: string; approved: boolean }
-  | { kind: "get-state" };
+  | { kind: "get-state" }
+  | { kind: "get-history" }
+  | { kind: "delete-history"; sessionId?: string; clearAll?: boolean };
 
 export interface Settings {
   provider: ProviderId;

@@ -304,6 +304,89 @@ $("new-task-btn").addEventListener("click", () => {
 // Settings
 $("btn-settings").addEventListener("click", () => chrome.runtime.openOptionsPage());
 
+// ─── History Panel ──────────────────────────────────────────────────────
+
+const historyPanel = $("history-panel");
+const historyList = $("history-list");
+
+async function loadHistory(): Promise<void> {
+  const response = await send({ kind: "get-history" }) as { sessions?: Array<{
+    id: string; task: string; status: string; completedAt: number;
+    durationMs: number; piiRedacted: number; summary: string;
+  }> } | undefined;
+
+  const sessions = response?.sessions ?? [];
+  if (sessions.length === 0) {
+    historyList.innerHTML = `<div class="empty-state" style="padding: 20px;"><p class="empty-sub">No sessions yet. Complete a task to see history here.</p></div>`;
+    return;
+  }
+
+  historyList.innerHTML = "";
+  for (const session of sessions) {
+    const item = document.createElement("div");
+    item.className = "history-item";
+    const date = new Date(session.completedAt);
+    const timeStr = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const dateStr = date.toLocaleDateString([], { month: "short", day: "numeric" });
+    const dur = session.durationMs > 60000
+      ? `${Math.round(session.durationMs / 60000)}m`
+      : `${Math.round(session.durationMs / 1000)}s`;
+
+    item.innerHTML = `
+      <div class="history-item-task">${escapeHtml(session.task)}</div>
+      <div class="history-item-meta">
+        <span class="history-status ${session.status}">${session.status}</span>
+        <span>${timeStr} · ${dateStr}</span>
+        <span>${dur}</span>
+        ${session.piiRedacted > 0 ? `<span>🔒 ${session.piiRedacted}</span>` : ""}
+      </div>
+      <div class="history-item-actions">
+        <button class="history-action-btn" data-replay="${escapeAttr(session.task)}">REPLAY</button>
+        <button class="history-action-btn" data-delete="${session.id}">DELETE</button>
+      </div>
+    `;
+
+    // Replay button.
+    item.querySelector("[data-replay]")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      historyPanel.classList.add("hidden");
+      void submit(session.task);
+    });
+
+    // Delete button.
+    item.querySelector("[data-delete]")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void send({ kind: "delete-history", sessionId: session.id });
+      item.remove();
+    });
+
+    historyList.appendChild(item);
+  }
+}
+
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function escapeAttr(str: string): string {
+  return str.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+$("btn-history").addEventListener("click", () => {
+  historyPanel.classList.toggle("hidden");
+  if (!historyPanel.classList.contains("hidden")) {
+    void loadHistory();
+  }
+});
+
+$("history-close").addEventListener("click", () => {
+  historyPanel.classList.add("hidden");
+});
+
+$("history-clear").addEventListener("click", () => {
+  void send({ kind: "delete-history", clearAll: true });
+  historyList.innerHTML = `<div class="empty-state" style="padding: 20px;"><p class="empty-sub">No sessions yet. Complete a task to see history here.</p></div>`;
+});
+
 // Perception view (toggle audit)
 $("btn-perception").addEventListener("click", () => {
   privacyAuditEl.classList.toggle("hidden");
