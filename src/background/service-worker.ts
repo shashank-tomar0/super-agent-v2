@@ -172,13 +172,13 @@ async function getSensitiveRegions(tabId: number): Promise<{
 
     const result = await chrome.tabs.sendMessage(tabId, { kind: "get-sensitive-regions" }) as any;
     if (!result?.sensitiveRegions) {
-      console.log("[VLEE] No sensitive regions returned from content script");
+      console.log("[VLESS] No sensitive regions returned from content script");
       return null;
     }
-    console.log(`[VLEE] Content script found ${result.sensitiveRegions.length} sensitive regions, DPR=${result.dpr}`);
+    console.log(`[VLESS] Content script found ${result.sensitiveRegions.length} sensitive regions, DPR=${result.dpr}`);
     return { regions: result.sensitiveRegions, dpr: result.dpr ?? 1 };
   } catch (err) {
-    console.warn("[VLEE] getSensitiveRegions failed:", err);
+    console.warn("[VLESS] getSensitiveRegions failed:", err);
     return null;
   }
 }
@@ -200,7 +200,7 @@ export async function captureAndProcessScreenshot(): Promise<{
   const dpr = sensitiveData?.dpr ?? 1;
   const sensitiveRegions = sensitiveData?.regions ?? [];
 
-  console.log(`[VLEE] Screenshot: ${captured.width}x${captured.height} @ ${dpr}x DPR, ${sensitiveRegions.length} sensitive regions found`);
+  console.log(`[VLESS] Screenshot: ${captured.width}x${captured.height} @ ${dpr}x DPR, ${sensitiveRegions.length} sensitive regions found`);
 
   const processed = await processScreenshot(
     captured.dataUrl, captured.width, captured.height, sensitiveRegions, dpr,

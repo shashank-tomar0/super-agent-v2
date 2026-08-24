@@ -234,7 +234,7 @@ async function processScreenshot(
   processingTimeMs: number;
 }> {
   const startTime = performance.now();
-  console.log(`[VLEE Offscreen] Processing ${width}x${height} screenshot, DPR=${dpr}, ${sensitiveRegions.length} DOM regions + face detection`);
+  console.log(`[VLESS Offscreen] Processing ${width}x${height} screenshot, DPR=${dpr}, ${sensitiveRegions.length} DOM regions + face detection`);
 
   // Load the screenshot into an ImageBitmap.
   const response = await fetch(dataUrl);
@@ -314,7 +314,7 @@ async function processScreenshot(
         height: f.boundingBox.height,
         confidence: 0.95,
       }));
-      console.log(`[VLEE Offscreen] Chrome FaceDetector found ${faceBoxes.length} faces`);
+      console.log(`[VLESS Offscreen] Chrome FaceDetector found ${faceBoxes.length} faces`);
     } catch {
       // Fall through to skin-color.
     }
@@ -324,7 +324,7 @@ async function processScreenshot(
     // Fallback: skin-color heuristic.
     const imageData = ctx.getImageData(0, 0, width, height);
     faceBoxes = detectFacesBySkinColor(imageData, width, height);
-    console.log(`[VLEE Offscreen] Skin-color heuristic found ${faceBoxes.length} faces`);
+    console.log(`[VLESS Offscreen] Skin-color heuristic found ${faceBoxes.length} faces`);
   }
 
   for (const face of faceBoxes) {
@@ -369,7 +369,7 @@ async function processScreenshot(
     reader.readAsDataURL(redactedBlob);
   });
 
-  console.log(`[VLEE Offscreen] Redacted ${allDetections.length} items (${faceBoxes.length} faces, ${sensitiveRegions.length} DOM regions) in ${(performance.now() - startTime).toFixed(0)}ms`);
+  console.log(`[VLESS Offscreen] Redacted ${allDetections.length} items (${faceBoxes.length} faces, ${sensitiveRegions.length} DOM regions) in ${(performance.now() - startTime).toFixed(0)}ms`);
 
   return {
     redactedDataUrl,
@@ -434,4 +434,4 @@ chrome.runtime.onMessage.addListener(
   },
 );
 
-console.log("[VLEE] Offscreen document initialized — DOM-guided privacy pipeline ready.");
+console.log("[VLESS] Offscreen document initialized — DOM-guided privacy pipeline ready.");

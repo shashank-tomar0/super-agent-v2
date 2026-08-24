@@ -63,7 +63,7 @@ export interface VLMResponse {
 
 // ─── System Prompt ──────────────────────────────────────────────────────────
 
-const VLM_SYSTEM_PROMPT = `You are VLEE's server-side vision-language model. You receive:
+const VLM_SYSTEM_PROMPT = `You are VLESS's server-side vision-language model. You receive:
 1. A REDACTED screenshot where faces are blurred and credentials are blacked out
 2. A TOKENIZED DOM context where sensitive values are replaced with opaque tokens like <CRED_1>, <ID_2>, <KEY_3>
 
@@ -177,8 +177,8 @@ async function processWithOpenRouter(request: VLMRequest): Promise<VLMResponse> 
     apiKey,
     baseURL: "https://openrouter.ai/api/v1",
     defaultHeaders: {
-      "HTTP-Referer": "https://github.com/vlee/vlee-agent",
-      "X-Title": "VLEE Agent Server",
+      "HTTP-Referer": "https://github.com/vless/vless-agent",
+      "X-Title": "VLESS Agent Server",
     },
   });
 

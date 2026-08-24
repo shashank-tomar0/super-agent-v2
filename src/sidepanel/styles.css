@@ -1,7 +1,7 @@
-/* ─── VLEE Agent — Hallmark Custom-04 Riso Broadsheet Theme ─────────────── */
+/* ─── VLESS Agent — Hallmark Custom-04 Riso Broadsheet Theme ─────────────── */
 /* Exact match to reference project: Big Shoulders Display + Fraunces + Spline Sans Mono */
 
-@import url('https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@400;700;800;900&family=Fraunces:ital,opsz,wght@0,9..40,400;0,9..40,600;1,9..40,400&family=Spline+Sans+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@400;700;800;900&family=Bebas+Neue&family=Fraunces:ital,opsz,wght@0,9..40,400;0,9..40,600;1,9..40,400&family=Spline+Sans+Mono:wght@400;500;600&display=swap');
 
 /* ─── Design Tokens (exact match) ───────────────────────────────────── */
 
@@ -18,6 +18,7 @@
   --color-teal: #00888c;
 
   --font-display: "Big Shoulders Display", sans-serif;
+  --font-headline: "Bebas Neue", "Big Shoulders Display", sans-serif;
   --font-body: "Fraunces", Georgia, serif;
   --font-mono: "Spline Sans Mono", monospace;
 }
@@ -274,19 +275,35 @@ body::after {
 /* ─── Headline ──────────────────────────────────────────────────────── */
 
 .headline {
-  font-family: var(--font-display);
-  font-size: 32px;
-  font-weight: 900;
+  font-family: var(--font-headline);
+  font-size: 38px;
+  font-weight: 400;
   text-transform: uppercase;
-  letter-spacing: 0.02em;
-  line-height: 0.95;
-  padding: 4px 16px 2px;
+  letter-spacing: 0.04em;
+  line-height: 0.9;
+  padding: 2px 16px 2px;
   color: var(--color-ink);
 }
 
 .headline-private {
   color: var(--color-accent);
   font-style: italic;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 42px;
+  letter-spacing: 0.06em;
+  position: relative;
+  display: inline-block;
+}
+.headline-private::after {
+  content: "PRIVATE";
+  position: absolute;
+  left: -2px;
+  top: 2px;
+  color: var(--color-teal);
+  z-index: -1;
+  opacity: 0.6;
+  font-style: normal;
 }
 
 .subhead {

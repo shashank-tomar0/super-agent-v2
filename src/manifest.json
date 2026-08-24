@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "VLEE Agent",
+  "name": "VLESS Agent",
   "version": "1.0.0",
   "description": "A privacy-preserving vision agent that reads your screen, protects your data, and automates browser tasks.",
   "minimum_chrome_version": "120",
@@ -22,7 +22,7 @@
   },
   "options_page": "options.html",
   "action": {
-    "default_title": "Open VLEE Agent",
+    "default_title": "Open VLESS Agent",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

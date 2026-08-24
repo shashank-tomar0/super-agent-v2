@@ -181,7 +181,7 @@ export function detectDOMPII(snapshot: {
         results.push({
           kind: "credential",
           value: el.value,
-          elementSelector: `[data-vlee-id="${el.id}"]`,
+          elementSelector: `[data-vless-id="${el.id}"]`,
           confidence: 0.9,
           label,
         });
@@ -196,7 +196,7 @@ export function detectDOMPII(snapshot: {
           results.push({
             kind: "api_key",
             value: el.value,
-            elementSelector: `[data-vlee-id="${el.id}"]`,
+            elementSelector: `[data-vless-id="${el.id}"]`,
             confidence: 0.95,
             label,
           });
@@ -209,7 +209,7 @@ export function detectDOMPII(snapshot: {
         results.push({
           kind: "credential",
           value: el.value,
-          elementSelector: `[data-vlee-id="${el.id}"]`,
+          elementSelector: `[data-vless-id="${el.id}"]`,
           confidence: 0.85,
           label: "Card number in field",
         });

@@ -1,7 +1,7 @@
 /**
  * Content Script
  *
- * The page-side half of the VLEE agent. It owns the only code that reads
+ * The page-side half of the VLESS agent. It owns the only code that reads
  * or touches the DOM; the service worker drives it entirely through messages.
  *
  * Perception channel: DOM perception — flattens interactive elements into

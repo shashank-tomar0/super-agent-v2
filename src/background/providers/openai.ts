@@ -95,7 +95,7 @@ export function createOpenAIPlanner(
     defaultHeaders:
       provider === "openrouter"
         ? // OpenRouter attributes traffic with these; both are optional.
-          { "HTTP-Referer": "https://github.com/vlee/vlee-agent", "X-Title": "VLEE Agent" }
+          { "HTTP-Referer": "https://github.com/vless/vless-agent", "X-Title": "VLESS Agent" }
         : undefined,
   });
 

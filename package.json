@@ -1,9 +1,9 @@
 {
-  "name": "vlee-agent",
+  "name": "vless-agent",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "VLEE — a privacy-preserving vision agent for Chrome and Firefox",
+  "description": "VLESS — a privacy-preserving vision agent for Chrome and Firefox",
   "scripts": {
     "build": "node build.mjs",
     "dev": "node build.mjs --watch",

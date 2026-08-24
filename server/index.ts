@@ -1,7 +1,7 @@
 /**
- * VLEE Server
+ * VLESS Server
  *
- * Privacy-preserving VLM processing server for the VLEE browser agent.
+ * Privacy-preserving VLM processing server for the VLESS browser agent.
  * Receives ONLY sanitized data:
  *   - Redacted screenshots (faces blurred, credentials blacked)
  *   - Tokenized DOM context (PII replaced with opaque tokens)
@@ -96,7 +96,7 @@ app.get("/api/models", (_req, res) => {
 // ─── Error Handling ─────────────────────────────────────────────────────────
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error("[VLEE Server] Error:", err.message);
+  console.error("[VLESS Server] Error:", err.message);
   res.status(500).json({
     error: "Internal server error",
     message: process.env.NODE_ENV === "development" ? err.message : undefined,
@@ -106,7 +106,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 // ─── Start ──────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
-  console.log(`[VLEE Server] Running on http://localhost:${PORT}`);
-  console.log(`[VLEE Server] VLM Provider: ${process.env.VLM_PROVIDER ?? "anthropic"}`);
-  console.log(`[VLEE Server] VLM Model: ${process.env.VLM_MODEL ?? "claude-sonnet-5"}`);
+  console.log(`[VLESS Server] Running on http://localhost:${PORT}`);
+  console.log(`[VLESS Server] VLM Provider: ${process.env.VLM_PROVIDER ?? "anthropic"}`);
+  console.log(`[VLESS Server] VLM Model: ${process.env.VLM_MODEL ?? "claude-sonnet-5"}`);
 });

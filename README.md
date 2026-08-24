@@ -1,6 +1,6 @@
-# VLEE Agent
+# VLESS Agent
 
-**VLEE** (Vision-Language Edge Engine) — a privacy-preserving browser agent that runs
+**VLESS** (Vision-Language Edge Engine) — a privacy-preserving browser agent that runs
 visual perception models on your device, detects and redacts PII before anything
 crosses the wire, and delegates reasoning to a server-side VLM that only ever
 sees sanitized data.
@@ -62,7 +62,7 @@ provider you selected.
 | Anthropic | console.anthropic.com | Native tool-use. |
 | OpenAI | platform.openai.com | Chat Completions with function calling. |
 | OpenRouter | openrouter.ai | One key, 400+ models across vendors. |
-| VLEE Server | Self-hosted | Privacy-preserving VLM processing. |
+| VLESS Server | Self-hosted | Privacy-preserving VLM processing. |
 
 Click the toolbar icon to open the side panel, then give it a task.
 
@@ -112,7 +112,7 @@ Runs via WebGPU through ONNX Runtime Web in an offscreen document:
 
 ### Server Component
 
-The VLEE server (`/server`) receives only sanitized data:
+The VLESS server (`/server`) receives only sanitized data:
 
 - Redacted screenshots (faces blurred, credentials blacked)
 - Tokenized DOM context (PII replaced with opaque tokens)

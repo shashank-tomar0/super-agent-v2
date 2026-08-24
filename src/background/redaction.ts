@@ -274,7 +274,7 @@ export function redactSnapshot(
     detections
       .filter((d) => d.kind === "credential" || d.kind === "api_key")
       .map((d) => {
-        const match = d.elementSelector?.match(/data-vlee-id="(\d+)"/);
+        const match = d.elementSelector?.match(/data-vless-id="(\d+)"/);
         return match ? parseInt(match[1], 10) : -1;
       })
       .filter((id) => id >= 0),

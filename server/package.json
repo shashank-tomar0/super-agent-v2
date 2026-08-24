@@ -1,7 +1,7 @@
 {
-  "name": "vlee-server",
+  "name": "vless-server",
   "version": "1.0.0",
-  "description": "VLEE Server — privacy-preserving VLM processing for browser agents",
+  "description": "VLESS Server — privacy-preserving VLM processing for browser agents",
   "type": "module",
   "scripts": {
     "dev": "tsx watch index.ts",

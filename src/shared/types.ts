@@ -167,18 +167,18 @@ export interface Settings {
   maxSteps: number;
   /** Ask before click/type on anything that looks irreversible. */
   confirmRisky: boolean;
-  /** VLEE server configuration for privacy-preserving VLM processing. */
+  /** VLESS server configuration for privacy-preserving VLM processing. */
   server: ServerSettings;
   /** Privacy pipeline configuration. */
   privacy: PrivacySettings;
 }
 
 export interface ServerSettings {
-  /** Whether to use the VLEE server for VLM processing. */
+  /** Whether to use the VLESS server for VLM processing. */
   enabled: boolean;
   /** Server URL (default: http://localhost:3001). */
   url: string;
-  /** API key for the VLEE server (optional, for authenticated servers). */
+  /** API key for the VLESS server (optional, for authenticated servers). */
   apiKey: string;
 }
 

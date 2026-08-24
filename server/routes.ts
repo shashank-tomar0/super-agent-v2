@@ -1,5 +1,5 @@
 /**
- * VLEE Server Routes
+ * VLESS Server Routes
  *
  * API endpoints for the privacy-preserving VLM processing server.
  */
@@ -57,9 +57,9 @@ export async function handleProcessRequest(req: Request, res: Response): Promise
     }
 
     // Log request (without sensitive data).
-    console.log(`[VLEE] Processing request for task: "${body.task!.slice(0, 80)}..."`);
-    console.log(`[VLEE] DOM elements: ${body.domContext!.elements.length}`);
-    console.log(`[VLEE] Screenshot size: ${Math.round(body.screenshot!.length / 1024)}KB`);
+    console.log(`[VLESS] Processing request for task: "${body.task!.slice(0, 80)}..."`);
+    console.log(`[VLESS] DOM elements: ${body.domContext!.elements.length}`);
+    console.log(`[VLESS] Screenshot size: ${Math.round(body.screenshot!.length / 1024)}KB`);
 
     // Process through VLM.
     const request: VLMRequest = {
@@ -72,11 +72,11 @@ export async function handleProcessRequest(req: Request, res: Response): Promise
     const response = await processVisionRequest(request);
 
     const elapsed = Date.now() - startTime;
-    console.log(`[VLEE] Processed in ${elapsed}ms — ${response.commands.length} commands, confidence: ${response.confidence.toFixed(2)}`);
+    console.log(`[VLESS] Processed in ${elapsed}ms — ${response.commands.length} commands, confidence: ${response.confidence.toFixed(2)}`);
 
     // Log what commands were returned (for debugging).
     for (const cmd of response.commands) {
-      console.log(`[VLEE]   → ${cmd.action}: ${cmd.reasoning} (${(cmd.confidence * 100).toFixed(0)}%)`);
+      console.log(`[VLESS]   → ${cmd.action}: ${cmd.reasoning} (${(cmd.confidence * 100).toFixed(0)}%)`);
     }
 
     res.json({
@@ -92,7 +92,7 @@ export async function handleProcessRequest(req: Request, res: Response): Promise
     });
   } catch (error) {
     const elapsed = Date.now() - startTime;
-    console.error(`[VLEE] Error after ${elapsed}ms:`, error);
+    console.error(`[VLESS] Error after ${elapsed}ms:`, error);
 
     res.status(500).json({
       success: false,
@@ -110,7 +110,7 @@ export function handleHealthCheck(_req: Request, res: Response): void {
 
   res.json({
     status: "healthy",
-    service: "VLEE Server",
+    service: "VLESS Server",
     version: "1.0.0",
     vlm: {
       provider,
