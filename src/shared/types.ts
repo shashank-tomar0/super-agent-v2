@@ -98,6 +98,25 @@ export interface TranscriptEntry {
   pending?: boolean;
 }
 
+/** Privacy audit snapshot — captured after each task for the judges. */
+export interface PrivacyAuditSnapshot {
+  /** Redacted screenshot as data URL (faces blurred, credentials masked). */
+  redactedScreenshot?: string;
+  /** PII detections found during this snapshot. */
+  detections: Array<{
+    kind: string;
+    label: string;
+    confidence: number;
+    box?: { x: number; y: number; width: number; height: number };
+  }>;
+  /** Token replacements made (e.g., <CRED_1> replaced "password123"). */
+  tokens: Array<{ token: string; kind: string }>;
+  /** Total PII items redacted in this snapshot. */
+  redactedCount: number;
+  /** Timestamp. */
+  timestamp: number;
+}
+
 /** Service worker -> side panel events. */
 export type AgentEvent =
   | { kind: "entry"; entry: TranscriptEntry }
@@ -107,6 +126,26 @@ export type AgentEvent =
       kind: "confirm";
       id: string;
       summary: string;
+    }
+  | {
+      kind: "privacy-audit";
+      audit: {
+        screenshots: Array<{
+          original?: string;
+          redacted?: string;
+          timestamp: number;
+        }>;
+        allDetections: Array<{
+          kind: string;
+          label: string;
+          confidence: number;
+        }>;
+        allTokens: Array<{ token: string; kind: string }>;
+        totalRedacted: number;
+        totalScreenshots: number;
+        totalPIIDetections: number;
+        durationMs: number;
+      };
     };
 
 /** Side panel -> service worker commands. */

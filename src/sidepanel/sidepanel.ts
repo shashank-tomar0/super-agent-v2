@@ -11,6 +11,7 @@ const stopBtn = $<HTMLButtonElement>("stop");
 const statusDot = $("status-dot");
 const confirmEl = $("confirm");
 const confirmText = $("confirm-text");
+const privacyAuditEl = $("privacy-audit");
 
 /** Rendered entries, so patches can find their node without a re-render. */
 const nodes = new Map<string, HTMLElement>();
@@ -76,6 +77,131 @@ function setRunning(running: boolean): void {
   inputEl.disabled = running;
 }
 
+// ─── Privacy Audit Rendering ────────────────────────────────────────────────
+
+const KIND_LABELS: Record<string, string> = {
+  face: "👤 Face",
+  credential: "🔑 Credential",
+  id_number: "🪪 ID Number",
+  api_key: "🗝️ API Key",
+  pii_text: "📝 PII Text",
+};
+
+const KIND_EMOJI: Record<string, string> = {
+  face: "👤",
+  credential: "🔑",
+  id_number: "🪪",
+  api_key: "🗝️",
+  pii_text: "📝",
+};
+
+function renderPrivacyAudit(audit: {
+  screenshots: Array<{ original?: string; redacted?: string; timestamp: number }>;
+  allDetections: Array<{ kind: string; label: string; confidence: number }>;
+  allTokens: Array<{ token: string; kind: string }>;
+  totalRedacted: number;
+  totalScreenshots: number;
+  totalPIIDetections: number;
+  durationMs: number;
+}): void {
+  privacyAuditEl.classList.remove("hidden");
+
+  // Summary stats.
+  const summaryEl = $("audit-summary");
+  summaryEl.innerHTML = `
+    <div class="audit-stat">
+      <span class="number">${audit.totalPIIDetections}</span>
+      <span class="label">PII Detected</span>
+    </div>
+    <div class="audit-stat">
+      <span class="number">${audit.totalRedacted}</span>
+      <span class="label">Items Redacted</span>
+    </div>
+    <div class="audit-stat">
+      <span class="number">${audit.allTokens.length}</span>
+      <span class="label">Tokens Created</span>
+    </div>
+  `;
+
+  // Screenshots before/after.
+  const screenshotsEl = $("audit-screenshots");
+  if (audit.screenshots.length > 0) {
+    screenshotsEl.innerHTML = `<h4>Before / After Redaction</h4>`;
+    for (const shot of audit.screenshots) {
+      const pair = document.createElement("div");
+      pair.className = "screenshot-pair";
+
+      if (shot.original) {
+        pair.innerHTML += `
+          <div class="shot">
+            <img src="${shot.original}" alt="Original screenshot" />
+            <div class="shot-label">Original</div>
+          </div>
+        `;
+      }
+      if (shot.redacted) {
+        pair.innerHTML += `
+          <div class="shot">
+            <img src="${shot.redacted}" alt="Redacted screenshot" />
+            <div class="shot-label">🔒 Redacted</div>
+          </div>
+        `;
+      }
+
+      screenshotsEl.appendChild(pair);
+    }
+  } else {
+    screenshotsEl.innerHTML = "";
+  }
+
+  // Detection chips.
+  const detectionsEl = $("audit-detections");
+  if (audit.allDetections.length > 0) {
+    // Deduplicate by label.
+    const unique = new Map<string, { kind: string; label: string; count: number }>();
+    for (const d of audit.allDetections) {
+      const existing = unique.get(d.label);
+      if (existing) {
+        existing.count++;
+      } else {
+        unique.set(d.label, { kind: d.kind, label: d.label, count: 1 });
+      }
+    }
+
+    detectionsEl.innerHTML = `<h4>Detected PII</h4><div class="detection-list"></div>`;
+    const list = detectionsEl.querySelector(".detection-list")!;
+    for (const [, det] of unique) {
+      const chip = document.createElement("span");
+      chip.className = `detection-chip ${det.kind}`;
+      chip.textContent = `${KIND_EMOJI[det.kind] ?? "•"} ${det.label}${det.count > 1 ? ` ×${det.count}` : ""}`;
+      list.appendChild(chip);
+    }
+  } else {
+    detectionsEl.innerHTML = "";
+  }
+
+  // Token vault.
+  const tokensEl = $("audit-tokens");
+  if (audit.allTokens.length > 0) {
+    tokensEl.innerHTML = `<h4>Token Vault (values hidden)</h4><div class="token-list"></div>`;
+    const list = tokensEl.querySelector(".token-list")!;
+    for (const tok of audit.allTokens) {
+      const chip = document.createElement("span");
+      chip.className = "token-chip";
+      chip.textContent = `${tok.token}`;
+      chip.title = `${KIND_LABELS[tok.kind] ?? tok.kind} — original value is never stored`;
+      list.appendChild(chip);
+    }
+  } else {
+    tokensEl.innerHTML = "";
+  }
+
+  // Scroll the audit panel into view.
+  privacyAuditEl.scrollIntoView({ behavior: "smooth" });
+}
+
+// ─── Event Listener ─────────────────────────────────────────────────────────
+
 chrome.runtime.onMessage.addListener((event: AgentEvent) => {
   switch (event.kind) {
     case "entry":
@@ -109,6 +235,10 @@ chrome.runtime.onMessage.addListener((event: AgentEvent) => {
       confirmText.textContent = event.summary;
       confirmEl.classList.remove("hidden");
       break;
+
+    case "privacy-audit":
+      renderPrivacyAudit(event.audit);
+      break;
   }
 });
 
@@ -122,6 +252,11 @@ function answerConfirm(approved: boolean): void {
 $("confirm-yes").addEventListener("click", () => answerConfirm(true));
 $("confirm-no").addEventListener("click", () => answerConfirm(false));
 
+// Close audit panel.
+$("audit-close").addEventListener("click", () => {
+  privacyAuditEl.classList.add("hidden");
+});
+
 async function submit(): Promise<void> {
   const task = inputEl.value.trim();
   if (!task) return;
@@ -131,6 +266,8 @@ async function submit(): Promise<void> {
 
   inputEl.value = "";
   inputEl.style.height = "auto";
+  // Hide previous audit when starting a new task.
+  privacyAuditEl.classList.add("hidden");
   await send({ kind: "run", task, tabId: tab.id });
 }
 
@@ -146,6 +283,7 @@ $("new-task").addEventListener("click", () => {
   nodes.clear();
   transcriptEl.querySelectorAll(".entry").forEach((n) => n.remove());
   emptyEl.classList.remove("hidden");
+  privacyAuditEl.classList.add("hidden");
   setRunning(false);
 });
 

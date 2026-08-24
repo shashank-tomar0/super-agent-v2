@@ -108,8 +108,17 @@ export interface AgentDeps {
   signal: AbortSignal;
   /** Capture and process a screenshot through the privacy pipeline. */
   captureScreenshot?: () => Promise<{
+    original: string;
     processed: import("../shared/types").ProcessedScreenshotResult;
   } | null>;
+  /** Record a privacy audit entry for the judges. */
+  recordAudit?: (entry: {
+    original?: string;
+    redacted?: string;
+    detections: Array<{ kind: string; label: string; confidence: number }>;
+    tokens: Array<{ token: string; kind: string }>;
+    redactedCount: number;
+  }) => void;
 }
 
 // ─── Main Loop ──────────────────────────────────────────────────────────────
@@ -128,7 +137,7 @@ export async function runTask(
   startTabId: number,
   deps: AgentDeps,
 ): Promise<void> {
-  const { settings, emit, askConfirm, signal, captureScreenshot } = deps;
+  const { settings, emit, askConfirm, signal, captureScreenshot, recordAudit } = deps;
 
   const planner = createPlanner(settings);
 
@@ -189,6 +198,18 @@ export async function runTask(
             role: "system",
             text: `Screenshot captured: ${screenshotResult.processed.redactedCount} PII items redacted in ${screenshotResult.processed.processingTimeMs.toFixed(0)}ms.`,
           },
+        });
+        // Record for privacy audit.
+        recordAudit?.({
+          original: screenshotResult.original,
+          redacted: screenshotResult.processed.redactedDataUrl,
+          detections: screenshotResult.processed.detections.map((d) => ({
+            kind: d.kind,
+            label: d.label,
+            confidence: d.confidence,
+          })),
+          tokens: tokenizer.getTokenSummary(),
+          redactedCount: screenshotResult.processed.redactedCount,
         });
       }
     } catch {
@@ -337,6 +358,18 @@ export async function runTask(
               if (screenshotResult) {
                 observation +=
                   `\n\n[Screenshot: ${screenshotResult.processed.redactedCount} PII redacted]`;
+                // Record for privacy audit.
+                recordAudit?.({
+                  original: screenshotResult.original,
+                  redacted: screenshotResult.processed.redactedDataUrl,
+                  detections: screenshotResult.processed.detections.map((d) => ({
+                    kind: d.kind,
+                    label: d.label,
+                    confidence: d.confidence,
+                  })),
+                  tokens: tokenizer.getTokenSummary(),
+                  redactedCount: screenshotResult.processed.redactedCount,
+                });
               }
             } catch {
               // Screenshot is optional.

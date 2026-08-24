@@ -144,16 +144,79 @@ async function processScreenshot(
 
 /**
  * Capture and process a screenshot in one call.
- * Called by the agent loop for visual perception.
+ * Returns both original (for audit comparison) and processed (redacted).
  */
 export async function captureAndProcessScreenshot(): Promise<{
+  original: string;
   processed: ProcessedScreenshotResult;
 } | null> {
   const captured = await captureVisibleTab();
   if (!captured) return null;
 
   const processed = await processScreenshot(captured.dataUrl, captured.width, captured.height);
-  return { processed };
+  return { original: captured.dataUrl, processed };
+}
+
+// ─── Privacy Audit Collector ────────────────────────────────────────────────
+
+interface AuditEntry {
+  original?: string;
+  redacted?: string;
+  detections: Array<{ kind: string; label: string; confidence: number }>;
+  tokens: Array<{ token: string; kind: string }>;
+  redactedCount: number;
+  timestamp: number;
+}
+
+let auditEntries: AuditEntry[] = [];
+let taskStartTime = 0;
+
+function recordAuditEntry(data: {
+  original?: string;
+  redacted?: string;
+  detections: Array<{ kind: string; label: string; confidence: number }>;
+  tokens: Array<{ token: string; kind: string }>;
+  redactedCount: number;
+}): void {
+  auditEntries.push({
+    ...data,
+    timestamp: Date.now(),
+  });
+}
+
+function emitPrivacyAudit(): void {
+  const allDetections: Array<{ kind: string; label: string; confidence: number }> = [];
+  const allTokens: Array<{ token: string; kind: string }> = [];
+  let totalRedacted = 0;
+
+  for (const entry of auditEntries) {
+    allDetections.push(...entry.detections);
+    allTokens.push(...entry.tokens);
+    totalRedacted += entry.redactedCount;
+  }
+
+  // Take at most 5 screenshots for the audit (to keep the UI manageable).
+  const screenshots = auditEntries
+    .filter((e) => e.original || e.redacted)
+    .slice(-5)
+    .map((e) => ({
+      original: e.original,
+      redacted: e.redacted,
+      timestamp: e.timestamp,
+    }));
+
+  emit({
+    kind: "privacy-audit",
+    audit: {
+      screenshots,
+      allDetections,
+      allTokens,
+      totalRedacted,
+      totalScreenshots: auditEntries.length,
+      totalPIIDetections: allDetections.length,
+      durationMs: Date.now() - taskStartTime,
+    },
+  });
 }
 
 // ─── Agent Loop ──────────────────────────────────────────────────────────────
@@ -165,6 +228,8 @@ async function start(task: string, tabId: number): Promise<void> {
 
   running = true;
   abort = new AbortController();
+  taskStartTime = Date.now();
+  auditEntries = [];
   emit({ kind: "status", running: true });
   emit({ kind: "entry", entry: { id: `u-${Date.now()}`, role: "user", text: task } });
 
@@ -175,6 +240,7 @@ async function start(task: string, tabId: number): Promise<void> {
       askConfirm,
       signal: abort.signal,
       captureScreenshot: captureAndProcessScreenshot,
+      recordAudit: recordAuditEntry,
     });
   } catch (error) {
     emit({
@@ -188,6 +254,8 @@ async function start(task: string, tabId: number): Promise<void> {
   } finally {
     running = false;
     abort = null;
+    // Emit the privacy audit before status so the panel can render it.
+    if (auditEntries.length > 0) emitPrivacyAudit();
     // Nothing is waiting on an answer once the run is over.
     for (const resolve of pendingConfirms.values()) resolve(false);
     pendingConfirms.clear();
