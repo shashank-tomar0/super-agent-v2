@@ -78,6 +78,9 @@ function renderAll(): void {
   // Provider list.
   renderProviderList();
 
+  // Show/hide Ollama test button.
+  updateTestButton();
+
   // API key & model.
   apiKeyEl.value = settings.apiKeys[settings.provider] ?? "";
   apiKeyEl.placeholder = provider.keyHint;
@@ -162,6 +165,84 @@ refreshBtn.addEventListener("click", async () => {
     refreshBtn.disabled = false;
   }
 });
+
+// ─── Test Ollama Connection ────────────────────────────────────────────────
+
+const testOllamaBtn = $("test-ollama") as HTMLButtonElement;
+const ollamaTestResult = $("ollama-test-result");
+
+testOllamaBtn.addEventListener("click", async () => {
+  testOllamaBtn.disabled = true;
+  ollamaTestResult.style.display = "block";
+  ollamaTestResult.textContent = "Testing connection to localhost:11434...";
+  ollamaTestResult.className = "status-msg";
+
+  try {
+    // Step 1: Test if Ollama is reachable.
+    const tagsResponse = await fetch("http://localhost:11434/api/tags");
+    if (!tagsResponse.ok) {
+      throw new Error(`Ollama returned ${tagsResponse.status} on /api/tags`);
+    }
+    const tags = await tagsResponse.json() as { models?: { name: string }[] };
+    const models = tags.models ?? [];
+    ollamaTestResult.textContent = `✓ Ollama is running. ${models.length} model(s): ${models.map(m => m.name).join(", ")}`;
+    ollamaTestResult.className = "status-msg ok";
+
+    // Step 2: Test chat endpoint (the one the extension uses).
+    try {
+      const chatResponse = await fetch("http://localhost:11434/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: models[0]?.name ?? "qwen2.5:1.5b",
+          messages: [{ role: "user", content: "Say hi" }],
+          stream: false,
+        }),
+      });
+
+      if (chatResponse.status === 403) {
+        ollamaTestResult.innerHTML =
+          `⚠ Ollama is running but returned <b>403 Forbidden</b> on /api/chat.<br><br>` +
+          `<b>Fix:</b> Stop Ollama, set the CORS env var, then restart:<br>` +
+          `<code style="display:block;padding:8px;margin-top:6px;background:var(--color-paper-2);border:1px solid var(--color-ink);">` +
+          `taskkill /F /IM ollama.exe<br>` +
+          `set OLLAMA_ORIGINS=chrome-extension://*<br>` +
+          `ollama serve</code>`;
+        ollamaTestResult.className = "status-msg bad";
+      } else if (chatResponse.ok) {
+        ollamaTestResult.textContent = `✓ Full connection test passed. Ollama is ready to use!`;
+        ollamaTestResult.className = "status-msg ok";
+      } else {
+        ollamaTestResult.textContent = `⚠ Chat endpoint returned ${chatResponse.status}. Ollama may need to be updated.`;
+        ollamaTestResult.className = "status-msg bad";
+      }
+    } catch {
+      // Chat endpoint might have CORS issues even if tags works.
+      ollamaTestResult.innerHTML =
+        `⚠ Cannot reach /api/chat. This is likely a CORS issue.<br><br>` +
+        `<b>Fix:</b> Stop Ollama, set the CORS env var, then restart:<br>` +
+        `<code style="display:block;padding:8px;margin-top:6px;background:var(--color-paper-2);border:1px solid var(--color-ink);">` +
+        `taskkill /F /IM ollama.exe<br>` +
+        `set OLLAMA_ORIGINS=chrome-extension://*<br>` +
+        `ollama serve</code>`;
+      ollamaTestResult.className = "status-msg bad";
+    }
+  } catch (error) {
+    ollamaTestResult.innerHTML =
+      `✗ Cannot connect to Ollama at localhost:11434.<br><br>` +
+      `<b>Make sure Ollama is running:</b><br>` +
+      `<code style="display:block;padding:8px;margin-top:6px;background:var(--color-paper-2);border:1px solid var(--color-ink);">` +
+      `ollama serve</code>`;
+    ollamaTestResult.className = "status-msg bad";
+  } finally {
+    testOllamaBtn.disabled = false;
+  }
+});
+
+// Show/hide test button based on provider selection.
+function updateTestButton(): void {
+  testOllamaBtn.style.display = settings.provider === "ollama" ? "" : "none";
+}
 
 $("save").addEventListener("click", async () => {
   captureFields();
