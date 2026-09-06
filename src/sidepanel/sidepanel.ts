@@ -240,8 +240,111 @@ chrome.runtime.onMessage.addListener((event: AgentEvent) => {
     case "privacy-audit":
       renderPrivacyAudit(event.audit);
       break;
+
+    case "learning-update":
+      renderLearningDashboard(event.stats);
+      break;
   }
 });
+
+// ─── Learning Dashboard ───────────────────────────────────────────────────
+
+const learningDashboardEl = $("learning-dashboard");
+
+function renderLearningDashboard(stats: {
+  totalRuns: number;
+  successRate: number;
+  piiDetected: number;
+  piiRedacted: number;
+  falsePositives: number;
+  missedPII: number;
+  sitesVisited: number;
+  rulesLearned: number;
+  improvementDelta: number;
+  rulesSummary: {
+    total: number;
+    byCategory: Record<string, number>;
+    highConfidence: number;
+    recentlyCreated: number;
+  };
+  lastReflection: string;
+}): void {
+  learningDashboardEl.classList.remove("hidden");
+
+  // Stats grid.
+  const statsEl = $("learning-stats");
+  const deltaClass = stats.improvementDelta > 0 ? "positive" : stats.improvementDelta < 0 ? "negative" : "";
+  const deltaSign = stats.improvementDelta > 0 ? "+" : "";
+
+  statsEl.innerHTML = `
+    <div class="learning-stat">
+      <span class="number">${stats.totalRuns}</span>
+      <span class="label">TOTAL RUNS</span>
+    </div>
+    <div class="learning-stat">
+      <span class="number ${stats.successRate >= 80 ? "positive" : "negative"}">${stats.successRate}%</span>
+      <span class="label">SUCCESS RATE</span>
+    </div>
+    <div class="learning-stat">
+      <span class="number ${deltaClass}">${deltaSign}${Math.round(stats.improvementDelta * 100)}%</span>
+      <span class="label">IMPROVEMENT</span>
+    </div>
+    <div class="learning-stat">
+      <span class="number">${stats.piiDetected}</span>
+      <span class="label">PII DETECTED</span>
+    </div>
+    <div class="learning-stat">
+      <span class="number positive">${stats.piiRedacted}</span>
+      <span class="label">PII REDACTED</span>
+    </div>
+    <div class="learning-stat">
+      <span class="number">${stats.rulesSummary.total}</span>
+      <span class="label">RULES LEARNED</span>
+    </div>
+  `;
+
+  // Rules by category.
+  const rulesEl = $("learning-rules");
+  if (stats.rulesSummary.total > 0) {
+    const categoryLabels: Record<string, string> = {
+      pii_detection: "PII Detection",
+      strategy: "Strategy",
+      site_pattern: "Site Pattern",
+      redaction: "Redaction",
+      safety: "Safety",
+    };
+    rulesEl.innerHTML = `<h4>Learned Rules (${stats.rulesSummary.total})</h4><div class="rule-list"></div>`;
+    const list = rulesEl.querySelector(".rule-list")!;
+    for (const [cat, count] of Object.entries(stats.rulesSummary.byCategory)) {
+      const chip = document.createElement("span");
+      chip.className = `rule-chip ${cat}`;
+      chip.textContent = `${categoryLabels[cat] ?? cat}: ${count}`;
+      list.appendChild(chip);
+    }
+    if (stats.rulesSummary.highConfidence > 0) {
+      const badge = document.createElement("span");
+      badge.className = "rule-chip";
+      badge.style.cssText = "border-color: var(--color-teal); color: var(--color-teal);";
+      badge.textContent = `${stats.rulesSummary.highConfidence} high-confidence`;
+      list.appendChild(badge);
+    }
+  } else {
+    rulesEl.innerHTML = `<h4>Learned Rules</h4><p class="empty-sub">No rules learned yet. Complete tasks to start improving.</p>`;
+  }
+
+  // Last reflection.
+  const reflectionEl = $("learning-reflection");
+  if (stats.lastReflection) {
+    reflectionEl.innerHTML = `
+      <h4>Last Reflection</h4>
+      <div class="reflection-text">${escapeHtml(stats.lastReflection)}</div>
+    `;
+  } else {
+    reflectionEl.innerHTML = "";
+  }
+
+  learningDashboardEl.scrollIntoView({ behavior: "smooth" });
+}
 
 // ─── Confirm Dialog ────────────────────────────────────────────────────────
 
@@ -259,6 +362,25 @@ $("confirm-no").addEventListener("click", () => answerConfirm(false));
 
 $("audit-close").addEventListener("click", () => {
   privacyAuditEl.classList.add("hidden");
+});
+
+// ─── Learning Dashboard ────────────────────────────────────────────────────
+
+$("btn-learning").addEventListener("click", async () => {
+  learningDashboardEl.classList.toggle("hidden");
+  if (!learningDashboardEl.classList.contains("hidden")) {
+    // Fetch current learning stats.
+    const response = await send({ kind: "get-learning-stats" }) as
+      | { stats?: Record<string, unknown>; rulesSummary?: Record<string, unknown> }
+      | undefined;
+    if (response?.stats) {
+      renderLearningDashboard(response.stats as any);
+    }
+  }
+});
+
+$("learning-close").addEventListener("click", () => {
+  learningDashboardEl.classList.add("hidden");
 });
 
 // ─── Task Submission ───────────────────────────────────────────────────────

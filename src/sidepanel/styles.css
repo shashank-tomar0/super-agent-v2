@@ -883,6 +883,96 @@ body::after {
   justify-content: flex-end;
 }
 
+/* ─── Learning Dashboard ─────────────────────────────────────────── */
+
+.learning-dashboard {
+  border-top: 3px solid var(--color-teal);
+  background: var(--color-paper);
+  max-height: 55vh;
+  overflow-y: auto;
+  position: relative;
+  z-index: 10;
+}
+
+.learning-stats {
+  padding: 10px 16px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.learning-stat {
+  text-align: center;
+  padding: 8px;
+  border: 2px solid var(--color-ink);
+  box-shadow: 2px 2px 0px var(--color-ink);
+  background: var(--color-paper-2);
+}
+
+.learning-stat .number {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--color-teal);
+  display: block;
+  line-height: 1;
+}
+
+.learning-stat .number.positive { color: var(--color-teal); }
+.learning-stat .number.negative { color: var(--color-accent); }
+
+.learning-stat .label {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-mute);
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.learning-rules { padding: 0 16px 8px; }
+.learning-rules h4,
+.learning-reflection h4 {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  color: var(--color-ink-mute);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.rule-chip {
+  display: inline-flex;
+  padding: 3px 8px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  border: 2px solid var(--color-ink);
+  box-shadow: 2px 2px 0px var(--color-ink);
+  background: var(--color-paper-2);
+  margin: 2px;
+}
+
+.rule-chip.pii_detection { border-color: var(--color-accent); color: var(--color-accent); }
+.rule-chip.strategy { border-color: var(--color-teal); color: var(--color-teal); }
+.rule-chip.site_pattern { border-color: #8e44ad; color: #8e44ad; }
+.rule-chip.redaction { border-color: #e67e22; color: #e67e22; }
+
+.learning-reflection { padding: 0 16px 12px; }
+.learning-reflection .reflection-text {
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--color-ink-2);
+  line-height: 1.5;
+  padding: 8px 10px;
+  border-left: 3px solid var(--color-teal);
+  background: var(--color-paper-2);
+}
+
 /* ─── Utility ──────────────────────────────────────────────────────── */
 
 .hidden { display: none !important; }
