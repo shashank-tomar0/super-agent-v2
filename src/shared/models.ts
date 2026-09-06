@@ -76,13 +76,12 @@ export const PROVIDERS: Record<ProviderId, ProviderInfo> = {
     keyUrl: "https://console.groq.com/keys",
     keyHint: "gsk_...",
     suggested: [
-      "llama-3.3-70b-versatile",
-      "llama-3.1-8b-instant",
-      "openai/gpt-oss-120b",
       "openai/gpt-oss-20b",
+      "openai/gpt-oss-120b",
       "qwen/qwen3.6-27b",
+      "qwen/qwen3.8-27b",
     ],
-    defaultModel: "llama-3.3-70b-versatile",
+    defaultModel: "openai/gpt-oss-20b",
   },
 };
 

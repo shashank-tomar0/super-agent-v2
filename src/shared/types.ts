@@ -226,7 +226,7 @@ export const DEFAULT_SETTINGS: Settings = {
     openai: "gpt-5",
     openrouter: "anthropic/claude-opus-5",
     ollama: "qwen2.5:1.5b",
-    groq: "llama-3.3-70b-versatile",
+    groq: "openai/gpt-oss-20b",
   },
   maxSteps: 40,
   confirmRisky: true,
