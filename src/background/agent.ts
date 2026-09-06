@@ -147,8 +147,8 @@ export async function runTask(
   // Use a shorter system prompt for small local models to avoid context overflow.
   const isLocalModel = settings.provider === "ollama";
   const systemPrompt = isLocalModel ? SYSTEM_PROMPT_LOCAL : SYSTEM_PROMPT;
-  // Small models have limited context — cap snapshot elements to avoid truncation.
-  const maxSnapshotElements = isLocalModel ? 30 : 80;
+  // Cap snapshot elements to avoid context overflow across all providers.
+  const maxSnapshotElements = isLocalModel ? 20 : 50;
 
   const planner = createPlanner(settings);
 
@@ -264,13 +264,13 @@ export async function runTask(
     });
   }
 
-  // For small models, truncate snapshot to avoid context overflow.
+  // Truncate snapshot to avoid context overflow across all providers.
   if (snapshot && snapshot.elements.length > maxSnapshotElements) {
-    snapshot = {
-      ...snapshot,
-      elements: snapshot.elements.slice(0, maxSnapshotElements),
-      truncated: true,
-    };
+    // Prefer visible elements over offscreen ones.
+    const visible = snapshot.elements.filter((e) => !e.attrs?.offscreen);
+    const offscreen = snapshot.elements.filter((e) => e.attrs?.offscreen);
+    const kept = [...visible, ...offscreen].slice(0, maxSnapshotElements);
+    snapshot = { ...snapshot, elements: kept, truncated: true };
   }
 
   const messages: ConvMessage[] = [
@@ -559,13 +559,11 @@ export async function runTask(
           const { sanitized, piiCount, detections: freshDetections } = sanitizeSnapshot(snapshot);
           snapshot = sanitized;
 
-          // For small models, truncate fresh snapshots to avoid context overflow.
-          if (isLocalModel && snapshot.elements.length > maxSnapshotElements) {
-            snapshot = {
-              ...snapshot,
-              elements: snapshot.elements.slice(0, maxSnapshotElements),
-              truncated: true,
-            };
+          // Truncate fresh snapshots to avoid context overflow.
+          if (snapshot.elements.length > maxSnapshotElements) {
+            const vis = snapshot.elements.filter((e) => !e.attrs?.offscreen);
+            const off = snapshot.elements.filter((e) => e.attrs?.offscreen);
+            snapshot = { ...snapshot, elements: [...vis, ...off].slice(0, maxSnapshotElements), truncated: true };
           }
           piiTotal += piiCount;
 

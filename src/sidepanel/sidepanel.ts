@@ -370,12 +370,22 @@ $("btn-learning").addEventListener("click", async () => {
   learningDashboardEl.classList.toggle("hidden");
   if (!learningDashboardEl.classList.contains("hidden")) {
     // Fetch current learning stats.
-    const response = await send({ kind: "get-learning-stats" }) as
-      | { stats?: Record<string, unknown>; rulesSummary?: Record<string, unknown> }
-      | undefined;
-    if (response?.stats) {
-      const merged = { ...response.stats, rulesSummary: response.rulesSummary ?? {} };
-      renderLearningDashboard(merged as any);
+    const response = (await send({ kind: "get-learning-stats" })) as any;
+    if (response && response.stats) {
+      const merged = {
+        ...response.stats,
+        rulesSummary: response.rulesSummary ?? { total: 0, byCategory: {}, highConfidence: 0, recentlyCreated: 0 },
+      };
+      renderLearningDashboard(merged);
+    } else {
+      // No data yet - render empty state.
+      renderLearningDashboard({
+        totalRuns: 0, successRate: 0, piiDetected: 0, piiRedacted: 0,
+        falsePositives: 0, missedPII: 0, sitesVisited: 0, rulesLearned: 0,
+        improvementDelta: 0,
+        rulesSummary: { total: 0, byCategory: {}, highConfidence: 0, recentlyCreated: 0 },
+        lastReflection: "",
+      });
     }
   }
 });
