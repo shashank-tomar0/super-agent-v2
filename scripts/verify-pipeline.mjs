@@ -280,6 +280,19 @@ ok("vault samples (incl. phone/Aadhaar values) contain no digits",
     .every((t) => noDigits(t.sample ?? "")),
   JSON.stringify(samplesC));
 
+// Executor details echo what was typed AFTER token resolution — they must be
+// re-tokenized before they reach the model or transcript.
+const echoed = tokenizer.redactValues(
+  'Typed "rahul.sharma@gmail.com" into <input> (To). Typed "+91 98765 43210" into <input>. Body: hi',
+);
+ok("raw email removed from echoed action detail", !echoed.includes("rahul.sharma@gmail.com"), echoed);
+ok("raw phone removed from echoed action detail", !echoed.includes("+91 98765 43210"), echoed);
+ok("echoed detail now carries tokens instead", /<[A-Z]+_\d+>/.test(echoed), echoed);
+ok("ordinary short text in the detail is untouched",
+  echoed.includes("Body: hi") && echoed.includes("Typed \""), echoed);
+ok("redactValues leaves unrelated text alone",
+  tokenizer.redactValues("The draft was saved to Gmail.") === "The draft was saved to Gmail.");
+
 // ─── Scenario D: re-OCR pixel verification logic ───────────────────────────
 console.log("\n=== Scenario D: re-OCR pixel verification ===\n");
 

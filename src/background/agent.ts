@@ -673,16 +673,20 @@ export async function runTask(
           const detLatency = performance.now() - detStart;
           controller = detOutcome.controller;
 
+          // Re-tokenize the executed detail: the executor resolved tokens to
+          // real values, and its echo must not carry them back to the model.
+          const safeDetDetail = tokenizer.redactValues(detOutcome.result.detail);
+
           // Track deterministic action for experience memory.
           trackedActions.push({
             tool: detResult.action.name,
             success: detOutcome.result.ok,
             latencyMs: detLatency,
             strategy: "deterministic",
-            error: detOutcome.result.ok ? undefined : detOutcome.result.detail,
+            error: detOutcome.result.ok ? undefined : safeDetDetail,
           });
 
-          emit({ kind: "patch", id: detId, text: detOutcome.result.detail, pending: false });
+          emit({ kind: "patch", id: detId, text: safeDetDetail, pending: false });
 
           if (detOutcome.result.snapshot) {
             snapshot = detOutcome.result.snapshot;
@@ -698,7 +702,7 @@ export async function runTask(
           });
           messages.push({
             role: "tool",
-            results: [{ id: `det-${detId}`, content: detOutcome.result.detail, isError: !detOutcome.result.ok }],
+            results: [{ id: `det-${detId}`, content: safeDetDetail, isError: !detOutcome.result.ok }],
           });
 
           continue;
@@ -934,19 +938,23 @@ ${freshRendered}`,
       controller = outcome.controller;
       const { result } = outcome;
 
+      // Re-tokenize the executed detail before it can reach the model, the
+      // transcript, or stored memory — raw resolved values must not leak back.
+      const safeDetail = tokenizer.redactValues(result.detail);
+
       // Track action for experience memory.
       trackedActions.push({
         tool: call.name,
         success: result.ok,
         latencyMs: actionLatency,
         strategy: "llm",
-        error: result.ok ? undefined : result.detail,
+        error: result.ok ? undefined : safeDetail,
       });
 
       // Record action in privacy ledger.
       ledgerRecordAction(call.name, result.ok, typeof call.input.element_id === "number" ? call.input.element_id : undefined).catch(() => {});
 
-      emit({ kind: "patch", id: stepId, text: result.detail, pending: false });
+      emit({ kind: "patch", id: stepId, text: safeDetail, pending: false });
 
       // After a type+submit that triggers navigation, wait for the page to
       // finish loading before re-perceiving. Without this, the agent reads
@@ -958,7 +966,7 @@ ${freshRendered}`,
 
       // Verify: re-perceive after anything that could have changed the page,
       // then apply the privacy pipeline to the fresh snapshot.
-      let observation = result.detail;
+      let observation = safeDetail;
       const mayHaveChanged = PAGE_ACTIONS.has(call.name)
         ? call.name !== "find_text" && call.name !== "wait"
         : true;

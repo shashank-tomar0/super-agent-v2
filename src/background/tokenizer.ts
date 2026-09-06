@@ -326,6 +326,34 @@ export class PIITokenizer {
   }
 
   /**
+   * Replace any vault value that appears in `text` back with its token.
+   *
+   * Called on action results BEFORE they reach the model or the transcript:
+   * the executor resolves a token to the real value at execution time, and its
+   * result detail echoes what was typed ("Typed shashank@gmail.com into …").
+   * Without this re-tokenization the raw value would flow back into the LLM
+   * context on the next turn — silently undoing the entire privacy pipeline.
+   */
+  redactValues(text: string): string {
+    let out = String(text);
+    const entries = Array.from(this.vault.values())
+      .filter((e) => e.original.length >= 4)
+      // Longest first so a value never partially clobbers a longer one.
+      .sort((a, b) => b.original.length - a.original.length);
+    for (const entry of entries) {
+      const val = entry.original;
+      if (!out.includes(val)) continue;
+      const escaped = val.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const isAlpha = /^[A-Za-z ]+$/.test(val);
+      const pattern = isAlpha
+        ? new RegExp(`(^|[^A-Za-z])${escaped}(?=$|[^A-Za-z])`, "g")
+        : new RegExp(escaped, "g");
+      out = out.replace(pattern, (match, lead) => `${lead ?? ""}${entry.token}`);
+    }
+    return out;
+  }
+
+  /**
    * Get a summary of all tokenized values (for debugging/demo).
    * Does NOT expose the original values — just the token→kind mapping plus a
    * masked sample ("r•••@gmail.com") so the UI can show what was tokenized.
