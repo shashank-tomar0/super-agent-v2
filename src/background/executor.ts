@@ -6,20 +6,55 @@ import type {
 } from "../shared/types";
 import { PAGE_ACTIONS } from "./tools";
 
+/** How long a content-script round trip may take before we treat it as hung. */
+const CONTENT_TIMEOUT_MS = 30_000;
+
 /** Tracks which tab the agent is currently driving. */
 export class TabController {
   constructor(public tabId: number) {}
 
   /**
    * Sends a message to the page, injecting the content script first if the tab
-   * predates the extension being installed or reloaded.
+   * predates the extension being installed or reloaded. Every round trip is
+   * bounded: a dead or hung content script must surface as an error, never as
+   * an infinite silent freeze between log lines.
    */
   private async send(request: ContentRequest): Promise<ActionResult> {
+    const kind = request.kind;
+    const call = () =>
+      new Promise<ActionResult>((resolve, reject) => {
+        const timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `The page did not respond to ${kind} within ${Math.round(CONTENT_TIMEOUT_MS / 1000)}s — the tab may be busy or the content script stopped. Try the task again on a freshly loaded page.`,
+              ),
+            ),
+          CONTENT_TIMEOUT_MS,
+        );
+        chrome.tabs.sendMessage(this.tabId, request).then(
+          (value) => {
+            clearTimeout(timer);
+            resolve(value);
+          },
+          (error) => {
+            clearTimeout(timer);
+            reject(error);
+          },
+        );
+      });
+
     try {
-      return await chrome.tabs.sendMessage(this.tabId, request);
-    } catch {
+      return await call();
+    } catch (error) {
+      // Injection errors and "Receiving end does not exist" mean the content
+      // script is missing — inject once and retry. Timeouts are NOT retried
+      // (the page genuinely did not answer) and bubble up as-is.
+      const message = error instanceof Error ? error.message : String(error);
+      const missingScript = /Receiving end does not exist|Could not establish connection|No tab with id/i.test(message);
+      if (!missingScript || message.startsWith("The page did not respond")) throw error;
       await this.inject();
-      return await chrome.tabs.sendMessage(this.tabId, request);
+      return await call();
     }
   }
 

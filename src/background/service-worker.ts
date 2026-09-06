@@ -83,9 +83,29 @@ function emit(event: AgentEvent): void {
   chrome.runtime.sendMessage(event).catch(() => undefined);
 }
 
+/** How long an approval prompt waits before it auto-declines (prevents a
+ * permanent hang when the side panel is closed or the user walks away). */
+const APPROVAL_TIMEOUT_MS = 120_000;
+
 function askConfirm(id: string, summary: string): Promise<boolean> {
   return new Promise((resolve) => {
-    pendingConfirms.set(id, resolve);
+    const timer = setTimeout(() => {
+      if (!pendingConfirms.has(id)) return;
+      pendingConfirms.delete(id);
+      emit({
+        kind: "entry",
+        entry: {
+          id: `confirm-timeout-${Date.now()}`,
+          role: "system",
+          text: "Approval request timed out after 120s and was treated as declined. Re-run and approve within the window if you want the action to proceed.",
+        },
+      });
+      resolve(false);
+    }, APPROVAL_TIMEOUT_MS);
+    pendingConfirms.set(id, (approved) => {
+      clearTimeout(timer);
+      resolve(approved);
+    });
     emit({ kind: "confirm", id, summary });
   });
 }
@@ -161,10 +181,14 @@ async function processScreenshot(
   const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   return new Promise((resolve, reject) => {
+    // First-run OCR loads the Tesseract wasm core + traineddata from vendor,
+    // which can exceed 10s on a cold disk — give it room. The timer is cleared
+    // the instant the reply arrives, so a longer bound costs nothing when the
+    // pipeline is healthy.
     const timeout = setTimeout(() => {
       chrome.runtime.onMessage.removeListener(listener);
-      reject(new Error("Offscreen processing timed out after 10s"));
-    }, 10000);
+      reject(new Error("Offscreen processing timed out after 45s"));
+    }, 45000);
 
     // Listen for the response from the offscreen document.
     const listener = (
@@ -199,16 +223,49 @@ async function processScreenshot(
 /**
  * Get sensitive element positions from the content script.
  * Returns bounding boxes of password fields, credit cards, ID numbers, etc.
+ * Every round trip is bounded — a hung content script degrades to "no
+ * regions" (capture still proceeds) instead of hanging the run forever.
  */
 async function getSensitiveRegions(tabId: number): Promise<{
   regions: Array<{ x: number; y: number; width: number; height: number; kind: string; label: string }>;
   dpr: number;
 } | null> {
+  // Distinguish "no receiver" (content script not injected — reinject) from
+  // "receiver busy" (script exists but hung — reinjecting would only create a
+  // duplicate listener, so we skip and let the region call time out gracefully).
+  const callContent = (message: unknown, timeoutMs = 15000): Promise<
+    { ok: true; value: unknown } | { ok: false; reason: "timeout" | "error" }
+  > =>
+    new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          resolve({ ok: false, reason: "timeout" });
+        }
+      }, timeoutMs);
+      chrome.tabs.sendMessage(tabId, message as never).then(
+        (value) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve({ ok: true, value });
+          }
+        },
+        () => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve({ ok: false, reason: "error" });
+          }
+        },
+      );
+    });
+
   try {
     // Ensure content script is injected (may not be if tab predates extension).
-    try {
-      await chrome.tabs.sendMessage(tabId, { kind: "ping" });
-    } catch {
+    const ping = await callContent({ kind: "ping" });
+    if (!ping.ok && ping.reason === "error") {
       await chrome.scripting.executeScript({
         target: { tabId },
         files: ["content.js"],
@@ -217,13 +274,15 @@ async function getSensitiveRegions(tabId: number): Promise<{
       await new Promise((r) => setTimeout(r, 100));
     }
 
-    const result = await chrome.tabs.sendMessage(tabId, { kind: "get-sensitive-regions" }) as any;
-    if (!result?.sensitiveRegions) {
+    const result = (await callContent({ kind: "get-sensitive-regions" })) as
+      | { ok: true; value: { sensitiveRegions?: unknown[]; dpr?: number } }
+      | { ok: false; reason: "timeout" | "error" };
+    if (!result.ok || !result.value.sensitiveRegions) {
       console.log("[VLESS] No sensitive regions returned from content script");
       return null;
     }
-    console.log(`[VLESS] Content script found ${result.sensitiveRegions.length} sensitive regions, DPR=${result.dpr}`);
-    return { regions: result.sensitiveRegions, dpr: result.dpr ?? 1 };
+    console.log(`[VLESS] Content script found ${(result.value.sensitiveRegions as unknown[]).length} sensitive regions, DPR=${result.value.dpr}`);
+    return { regions: result.value.sensitiveRegions as never, dpr: result.value.dpr ?? 1 };
   } catch (err) {
     console.warn("[VLESS] getSensitiveRegions failed:", err);
     return null;
