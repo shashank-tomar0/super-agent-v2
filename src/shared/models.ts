@@ -127,7 +127,7 @@ export async function listModels(
       .map((m) => m.id)
       .filter((id): id is string => Boolean(id))
       // Only include text/chat models, not whisper or embedding models.
-      .filter((id) => /^(llama|gpt|qwen|mixtral|gemma)/.test(id))
+      .filter((id) => /^(llama|openai\/gpt|qwen\/qwen|mixtral|gemma)/.test(id))
       .sort();
   }
 
