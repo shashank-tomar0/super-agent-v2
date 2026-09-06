@@ -143,9 +143,30 @@ export type AgentEvent =
         }>;
         allTokens: Array<{ token: string; kind: string }>;
         totalRedacted: number;
-        totalScreenshots: number;
-        totalPIIDetections: number;
-        durationMs: number;
+        totalScreenshots: number;      totalPIIDetections: number;
+      durationMs: number;
+      };
+    }
+  | { kind: "experience"; experience: Record<string, unknown> }
+  | {
+      kind: "learning-update";
+      stats: {
+        totalRuns: number;
+        successRate: number;
+        piiDetected: number;
+        piiRedacted: number;
+        falsePositives: number;
+        missedPII: number;
+        sitesVisited: number;
+        rulesLearned: number;
+        improvementDelta: number;
+        rulesSummary: {
+          total: number;
+          byCategory: Record<string, number>;
+          highConfidence: number;
+          recentlyCreated: number;
+        };
+        lastReflection: string;
       };
     };
 
@@ -157,7 +178,9 @@ export type PanelCommand =
   | { kind: "confirm-reply"; id: string; approved: boolean }
   | { kind: "get-state" }
   | { kind: "get-history" }
-  | { kind: "delete-history"; sessionId?: string; clearAll?: boolean };
+  | { kind: "delete-history"; sessionId?: string; clearAll?: boolean }
+  | { kind: "get-learning-stats" }
+  | { kind: "clear-learning" };
 
 export interface Settings {
   provider: ProviderId;

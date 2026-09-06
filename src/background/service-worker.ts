@@ -8,12 +8,17 @@ import type {
 import { normaliseSettings } from "../shared/types";
 import { runTask } from "./agent";
 import { saveSession, getSessions, deleteSession, clearHistory } from "./history";
+import { recordExperience, getMemoryStats } from "./experience-memory";
+import { reflectOnRun } from "./reflection";
+import { applyReflectionResults, getLearnedRules, getRulesSummary } from "./learned-rules";
+import type { RunExperience } from "./experience-memory";
 
 // The side panel can be closed and reopened mid-run, so the transcript lives
 // here rather than in the panel's own memory.
 let transcript: TranscriptEntry[] = [];
 let running = false;
 let abort: AbortController | null = null;
+let lastExperience: RunExperience | null = null;
 
 const pendingConfirms = new Map<string, (approved: boolean) => void>();
 
@@ -37,6 +42,9 @@ function emit(event: AgentEvent): void {
       }
       if (event.pending !== undefined) entry.pending = event.pending;
     }
+  } else if (event.kind === "experience") {
+    // Capture the experience for reflection after the task ends.
+    lastExperience = event.experience as unknown as RunExperience;
   }
   chrome.runtime.sendMessage(event).catch(() => undefined);
 }
@@ -338,6 +346,48 @@ async function start(task: string, tabId: number): Promise<void> {
 
     // Emit the privacy audit before status so the panel can render it.
     if (auditEntries.length > 0) emitPrivacyAudit();
+
+    // ── Self-Improvement: Record experience and run reflection ──
+    if (lastExperience) {
+      try {
+        // Store the experience in memory.
+        await recordExperience(lastExperience);
+
+        // Run reflection to generate new rules.
+        const existingRules = await getLearnedRules();
+        const reflectionResult = reflectOnRun(lastExperience, existingRules);
+
+        // Apply new rules to the rules store.
+        if (reflectionResult.newRules.length > 0) {
+          await applyReflectionResults(reflectionResult);
+          console.log(`[VLESS] Reflection: ${reflectionResult.newRules.length} new rules generated.`);
+        }
+
+        // Emit learning stats to the panel.
+        const stats = await getMemoryStats();
+        const rulesSummary = await getRulesSummary();
+        emit({
+          kind: "learning-update",
+          stats: {
+            totalRuns: stats.totalRuns,
+            successRate: Math.round(stats.averageSuccessRate * 100),
+            piiDetected: stats.totalPIIDetected,
+            piiRedacted: stats.totalPIIRedacted,
+            falsePositives: stats.totalFalsePositives,
+            missedPII: stats.totalMissedPII,
+            sitesVisited: stats.sitesVisited,
+            rulesLearned: stats.rulesLearned,
+            improvementDelta: stats.improvementDelta,
+            rulesSummary,
+            lastReflection: reflectionResult.summary,
+          },
+        } as AgentEvent);
+      } catch (err) {
+        console.warn("[VLESS] Reflection failed:", err);
+      }
+      lastExperience = null;
+    }
+
     // Nothing is waiting on an answer once the run is over.
     for (const resolve of pendingConfirms.values()) resolve(false);
     pendingConfirms.clear();
@@ -398,6 +448,24 @@ chrome.runtime.onMessage.addListener(
         }
         return true;
       }
+
+      case "get-learning-stats":
+        void (async () => {
+          const stats = await getMemoryStats();
+          const rulesSummary = await getRulesSummary();
+          sendResponse({ stats, rulesSummary });
+        })();
+        return true;
+
+      case "clear-learning":
+        void (async () => {
+          const { clearExperienceMemory } = await import("./experience-memory");
+          const { clearLearnedRules } = await import("./learned-rules");
+          await clearExperienceMemory();
+          await clearLearnedRules();
+          sendResponse({ ok: true });
+        })();
+        return true;
 
       default:
         return false;
