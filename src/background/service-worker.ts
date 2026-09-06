@@ -4,6 +4,7 @@ import type {
   ProcessedScreenshotResult,
   Settings,
   TranscriptEntry,
+  VerificationResult,
 } from "../shared/types";
 import { normaliseSettings } from "../shared/types";
 import { runTask } from "./agent";
@@ -230,6 +231,7 @@ interface AuditEntry {
   detections: Array<{ kind: string; label: string; confidence: number }>;
   tokens: Array<{ token: string; kind: string; sample?: string }>;
   redactedCount: number;
+  verification?: VerificationResult;
   timestamp: number;
 }
 
@@ -244,6 +246,7 @@ function recordAuditEntry(data: {
   detections: Array<{ kind: string; label: string; confidence: number }>;
   tokens: Array<{ token: string; kind: string; sample?: string }>;
   redactedCount: number;
+  verification?: VerificationResult;
 }): void {
   // Limit stored entries to prevent memory bloat (each base64 screenshot ~1-5MB).
   if (auditEntries.length >= MAX_AUDIT_ENTRIES) {
@@ -279,6 +282,9 @@ function emitPrivacyAudit(): void {
       timestamp: e.timestamp,
     }));
 
+  // Latest re-OCR verification result, shown as a proof badge in the audit.
+  const lastVerification = [...auditEntries].reverse().find((e) => e.verification)?.verification;
+
   emit({
     kind: "privacy-audit",
     audit: {
@@ -289,6 +295,7 @@ function emitPrivacyAudit(): void {
       totalScreenshots: auditEntries.length,
       totalPIIDetections: allDetections.length,
       durationMs: Date.now() - taskStartTime,
+      verification: lastVerification,
     },
   });
 }

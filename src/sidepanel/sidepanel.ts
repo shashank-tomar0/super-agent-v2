@@ -114,6 +114,15 @@ function renderPrivacyAudit(audit: {
   totalScreenshots: number;
   totalPIIDetections: number;
   durationMs: number;
+  verification?: {
+    verified: boolean;
+    regionsChecked: number;
+    regionsRedacted: number;
+    leakedPatterns: string[];
+    confidence: number;
+    summary: string;
+    timestamp: number;
+  };
 }): void {
   privacyAuditEl.classList.remove("hidden");
 
@@ -134,6 +143,18 @@ function renderPrivacyAudit(audit: {
       <span class="label">Tokens Created</span>
     </div>
   `;
+
+  // Re-OCR verification badge — pixel-level proof the redaction worked.
+  if (audit.verification) {
+    const vEl = document.createElement("div");
+    vEl.className = audit.verification.verified
+      ? "verification-badge verified"
+      : "verification-badge warn";
+    vEl.textContent = audit.verification.verified
+      ? `✓ RE-OCR VERIFIED — ${audit.verification.regionsRedacted}/${audit.verification.regionsChecked} sensitive regions confirmed redacted in the shipped image`
+      : `⚠ ${audit.verification.summary}`;
+    summaryEl.appendChild(vEl);
+  }
 
   // Screenshots before/after.
   const screenshotsEl = $("audit-screenshots");

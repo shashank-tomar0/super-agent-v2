@@ -66,6 +66,23 @@ export interface ActionResult {
   screenshot?: ProcessedScreenshotResult;
 }
 
+/** Result of pixel-level re-OCR verification after screenshot redaction. */
+export interface VerificationResult {
+  /** Whether every sensitive region was confirmed redacted. */
+  verified: boolean;
+  /** Number of regions that were checked against the redacted pixels. */
+  regionsChecked: number;
+  /** Number of regions confirmed altered/masked in the redacted image. */
+  regionsRedacted: number;
+  /** Human-readable reasons for any region that failed the check. */
+  leakedPatterns: string[];
+  /** 0-1 confidence from the region checks. */
+  confidence: number;
+  /** One-line human summary, e.g. "VERIFIED: 4/4 regions confirmed redacted". */
+  summary: string;
+  timestamp: number;
+}
+
 /** Screenshot processing result from the privacy pipeline. */
 export interface ProcessedScreenshotResult {
   redactedDataUrl: string;
@@ -77,6 +94,8 @@ export interface ProcessedScreenshotResult {
   }>;
   redactedCount: number;
   processingTimeMs: number;
+  /** Re-OCR proof that redaction actually worked on the shipped pixels. */
+  verification?: VerificationResult;
 }
 
 /** Messages the content script accepts. */
@@ -145,6 +164,8 @@ export type AgentEvent =
         totalRedacted: number;
         totalScreenshots: number;      totalPIIDetections: number;
       durationMs: number;
+      /** Latest re-OCR verification result, when a screenshot was redacted. */
+      verification?: VerificationResult;
       };
     }
   | { kind: "experience"; experience: Record<string, unknown> }

@@ -17,6 +17,7 @@ import type {
   PageSnapshot,
   Settings,
   TranscriptEntry,
+  VerificationResult,
 } from "../shared/types";
 import { SYSTEM_PROMPT, SYSTEM_PROMPT_LOCAL, taskPrompt } from "./prompt";
 import { TOOLS, PAGE_ACTIONS } from "./tools";
@@ -36,6 +37,7 @@ import {
   recordAction as ledgerRecordAction,
   recordTokenization as ledgerRecordTokenization,
   recordRedaction as ledgerRecordRedaction,
+  recordVerification as ledgerRecordVerification,
 } from "./privacy-ledger";
 
 let counter = 0;
@@ -138,6 +140,7 @@ export interface AgentDeps {
     detections: Array<{ kind: string; label: string; confidence: number }>;
     tokens: Array<{ token: string; kind: string; sample?: string }>;
     redactedCount: number;
+    verification?: VerificationResult;
   }) => void;
 }
 
@@ -262,16 +265,38 @@ export async function runTask(
     try {
       const screenshotResult = await captureScreenshot();
       if (screenshotResult) {
+        const processed = screenshotResult.processed;
+        const visualDetections = processed.detections.map((d) => ({
+          kind: d.kind,
+          label: d.label,
+          confidence: d.confidence,
+        }));
+        const verification = processed.verification;
+
         emit({
           kind: "entry",
           entry: {
             id: nextId(),
             role: "system",
-            text: `Screenshot captured: ${screenshotResult.processed.redactedCount} PII items redacted in ${screenshotResult.processed.processingTimeMs.toFixed(0)}ms.`,
+            text:
+              `Screenshot captured: ${processed.redactedCount} PII items redacted in ${processed.processingTimeMs.toFixed(0)}ms.` +
+              (verification && verification.regionsChecked > 0 ? ` ${verification.summary}` : ""),
           },
         });
+
+        // Ledger: visual detections + redaction + re-OCR verification proof.
+        if (visualDetections.length > 0) {
+          recordDetections(visualDetections.map((d) => ({ ...d, method: "visual" }))).catch(() => {});
+        }
+        if (processed.redactedCount > 0) {
+          ledgerRecordRedaction(processed.redactedCount, "visual").catch(() => {});
+        }
+        if (verification && verification.regionsChecked > 0) {
+          ledgerRecordVerification(verification.verified, verification.regionsChecked, verification.leakedPatterns.length).catch(() => {});
+        }
+
         // Track visual detections in experience memory too (faces, avatars).
-        for (const det of screenshotResult.processed.detections) {
+        for (const det of visualDetections) {
           trackedPII.push({
             kind: det.kind,
             method: "visual",
@@ -279,18 +304,15 @@ export async function runTask(
             confidence: det.confidence,
           });
         }
-        piiTotal += screenshotResult.processed.redactedCount;
+        piiTotal += processed.redactedCount;
         // Record for privacy audit.
         recordAudit?.({
           original: screenshotResult.original,
-          redacted: screenshotResult.processed.redactedDataUrl,
-          detections: screenshotResult.processed.detections.map((d) => ({
-            kind: d.kind,
-            label: d.label,
-            confidence: d.confidence,
-          })),
+          redacted: processed.redactedDataUrl,
+          detections: visualDetections,
           tokens: tokenizer.getTokenSummary(),
-          redactedCount: screenshotResult.processed.redactedCount,
+          redactedCount: processed.redactedCount,
+          verification,
         });
       }
     } catch {
@@ -704,10 +726,34 @@ ${freshRendered}`,
             try {
               const screenshotResult = await captureScreenshot();
               if (screenshotResult) {
-                observation +=
-                  `\n\n[Screenshot: ${screenshotResult.processed.redactedCount} PII redacted]`;
+                const processed = screenshotResult.processed;
+                const visualDetections = processed.detections.map((d) => ({
+                  kind: d.kind,
+                  label: d.label,
+                  confidence: d.confidence,
+                }));
+                const verification = processed.verification;
+
+                observation += `\n\n[Screenshot: ${processed.redactedCount} PII redacted]`;
+                if (verification && verification.regionsChecked > 0) {
+                  observation += verification.verified
+                    ? ` [Re-OCR VERIFIED: ${verification.regionsRedacted}/${verification.regionsChecked} regions confirmed redacted]`
+                    : ` [Re-OCR WARNING: ${verification.summary}]`;
+                }
+
+                // Ledger: visual detections + redaction + verification proof.
+                if (visualDetections.length > 0) {
+                  recordDetections(visualDetections.map((d) => ({ ...d, method: "visual" }))).catch(() => {});
+                }
+                if (processed.redactedCount > 0) {
+                  ledgerRecordRedaction(processed.redactedCount, "visual").catch(() => {});
+                }
+                if (verification && verification.regionsChecked > 0) {
+                  ledgerRecordVerification(verification.verified, verification.regionsChecked, verification.leakedPatterns.length).catch(() => {});
+                }
+
                 // Track visual detections in experience memory too (faces, avatars).
-                for (const det of screenshotResult.processed.detections) {
+                for (const det of visualDetections) {
                   trackedPII.push({
                     kind: det.kind,
                     method: "visual",
@@ -715,21 +761,15 @@ ${freshRendered}`,
                     confidence: det.confidence,
                   });
                 }
-                if (screenshotResult.processed.redactedCount > 0) {
-                  ledgerRecordRedaction(screenshotResult.processed.redactedCount, "visual").catch(() => {});
-                }
-                piiTotal += screenshotResult.processed.redactedCount;
+                piiTotal += processed.redactedCount;
                 // Record for privacy audit.
                 recordAudit?.({
                   original: screenshotResult.original,
-                  redacted: screenshotResult.processed.redactedDataUrl,
-                  detections: screenshotResult.processed.detections.map((d) => ({
-                    kind: d.kind,
-                    label: d.label,
-                    confidence: d.confidence,
-                  })),
+                  redacted: processed.redactedDataUrl,
+                  detections: visualDetections,
                   tokens: tokenizer.getTokenSummary(),
-                  redactedCount: screenshotResult.processed.redactedCount,
+                  redactedCount: processed.redactedCount,
+                  verification,
                 });
               }
             } catch {

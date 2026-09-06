@@ -46,7 +46,7 @@ const {
   detectAllPII,
 } = await import("../src/background/pii-detector.ts");
 const { detectContextualPII, contextualToDetectedPII } = await import("../src/background/contextual-pii.ts");
-const { tokenizer } = await import("../src/background/tokenizer.ts");
+const { tokenizer, maskSample } = await import("../src/background/tokenizer.ts");
 const { redactSnapshot } = await import("../src/background/redaction.ts");
 const {
   recordExperience, getMemoryStats, clearExperienceMemory,
@@ -54,7 +54,8 @@ const {
 } = await import("../src/background/experience-memory.ts");
 const { reflectOnRun } = await import("../src/background/reflection.ts");
 const { applyReflectionResults, getLearnedRules, getRulesSummary } = await import("../src/background/learned-rules.ts");
-const { recordRedaction, getLedgerSummary, clearLedger } = await import("../src/background/privacy-ledger.ts");
+const { recordRedaction, recordVerification, getLedgerSummary, clearLedger } = await import("../src/background/privacy-ledger.ts");
+const { verifyRegions, emptyVerification } = await import("../src/background/reocr-verification.ts");
 
 // ─── The exact sanitize flow from agent.ts sanitizeSnapshot() ───────────────
 function sanitizeSnapshot(snapshot) {
@@ -205,5 +206,118 @@ await recordRedaction(3, "visual");
 const ledgerB = await getLedgerSummary();
 ok("ledger totals both DOM + visual redactions", ledgerB.totalRedactions >= 4, `got ${ledgerB.totalRedactions}`);
 ok("ledger entries grew", ledgerB.totalEntries >= 2, `got ${ledgerB.totalEntries}`);
+
+// ─── Scenario C: mask samples never leak recoverable value fragments ───────
+console.log("\n=== Scenario C: masked token samples never leak raw values ===\n");
+
+function noDigits(s) { return !/[0-9]/.test(s); }
+function noAlnum(s) { return !/[A-Za-z0-9]/.test(s); }
+
+// Rebuild a small vault so getTokenSummary samples are real (Scenario B
+// cleared the Scenario A vault).
+tokenizer.clear();
+tokenizer.tokenize("1234 5678 9012", "id_number");
+tokenizer.tokenize("4111-1111-1111-1111", "credential");
+tokenizer.tokenize("+91 98765 43210", "credential");
+tokenizer.tokenize("rahul.sharma@gmail.com", "credential");
+tokenizer.tokenize("ABCDE1234F", "id_number");
+const samplesC = tokenizer.getTokenSummary();
+
+ok("email sample keeps only 2 chars of local part",
+  maskSample("rahul.sharma@gmail.com") === "ra•••@gmail.com",
+  `got ${maskSample("rahul.sharma@gmail.com")}`);
+ok("Aadhaar sample contains zero real digits",
+  noDigits(maskSample("1234 5678 9012")), `got ${maskSample("1234 5678 9012")}`);
+ok("Aadhaar sample keeps shape (spaces preserved)",
+  /^•••• •••• ••••$/.test(maskSample("1234 5678 9012")), `got ${maskSample("1234 5678 9012")}`);
+ok("card sample contains zero real digits",
+  noDigits(maskSample("4111-1111-1111-1111")), `got ${maskSample("4111-1111-1111-1111")}`);
+ok("phone sample contains zero real digits but keeps + separator",
+  noDigits(maskSample("+91 98765 43210")) && maskSample("+91 98765 43210").includes("+"),
+  `got ${maskSample("+91 98765 43210")}`);
+ok("PAN sample contains zero real letters or digits",
+  noAlnum(maskSample("ABCDE1234F")), `got ${maskSample("ABCDE1234F")}`);
+ok("SSN sample contains zero real digits",
+  noDigits(maskSample("123-45-6789")), `got ${maskSample("123-45-6789")}`);
+ok("name sample keeps at most 2 real characters",
+  /^Ra•+$/.test(maskSample("Rahul Sharma")), `got ${maskSample("Rahul Sharma")}`);
+ok("vault samples (incl. phone/Aadhaar values) contain no digits",
+  samplesC.filter((t) => t.kind === "credential" || t.kind === "id_number")
+    .every((t) => noDigits(t.sample ?? "")),
+  JSON.stringify(samplesC));
+
+// ─── Scenario D: re-OCR pixel verification logic ───────────────────────────
+console.log("\n=== Scenario D: re-OCR pixel verification ===\n");
+
+function makeImage(w, h, fill) {
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const v = fill(i % w, Math.floor(i / w));
+    data[i * 4] = v[0]; data[i * 4 + 1] = v[1]; data[i * 4 + 2] = v[2]; data[i * 4 + 3] = 255;
+  }
+  return { width: w, height: h, data };
+}
+const white = () => [255, 255, 255];
+const black = () => [0, 0, 0];
+const gray = () => [200, 200, 200];
+
+// D1: credential region blacked out → verified.
+const origD1 = makeImage(40, 40, white);
+const redD1 = makeImage(40, 40, (x, y) => (x >= 10 && x < 30 && y >= 10 && y < 30 ? black() : white()));
+const vD1 = verifyRegions(origD1, redD1, [{ x: 10, y: 10, width: 20, height: 20, kind: "id_number", label: "Aadhaar" }]);
+ok("blacked-out region verifies (solid mask)", vD1.verified && vD1.regionsRedacted === 1, JSON.stringify(vD1));
+
+// D2: face region with real content (skin-tone variance), blurred afterwards
+// (simulated by a heavy uniform smear) → verified via the pixel-diff path.
+const origD2 = makeImage(40, 40, (x, y) => {
+  if (x >= 5 && x < 25 && y >= 5 && y < 25) return ((x + y) % 2 ? [215, 180, 160] : [180, 145, 130]);
+  return white();
+});
+const redD2 = makeImage(40, 40, (x, y) => {
+  if (x >= 5 && x < 25 && y >= 5 && y < 25) return [70, 70, 70]; // heavy blur/overlay smear
+  return white();
+});
+const vD2 = verifyRegions(origD2, redD2, [{ x: 5, y: 5, width: 20, height: 20, kind: "face", label: "Face detected" }]);
+ok("content region that was blurred verifies via pixel diff", vD2.verified && vD2.regionsRedacted === 1, JSON.stringify(vD2));
+
+// D3: blank region (empty input field over white page) → trivially verified.
+const origD3 = makeImage(40, 40, white);
+const redD3 = makeImage(40, 40, white);
+const vD3 = verifyRegions(origD3, redD3, [{ x: 10, y: 10, width: 20, height: 20, kind: "input_field", label: "Empty field" }]);
+ok("blank region trivially verified (nothing to leak)", vD3.verified && vD3.regionsRedacted === 1, JSON.stringify(vD3));
+
+// D4: region WITH content that was NOT redacted → leaks, verification fails.
+const origD4 = makeImage(40, 40, (x, y) => {
+  if (x >= 8 && x < 30 && y >= 8 && y < 30) {
+    if (x >= 15 && x < 20 && y >= 15 && y < 20) return black(); // "text" glyph
+    return gray();
+  }
+  return white();
+});
+// Redacted image identical → nothing was actually redacted.
+const redD4 = makeImage(40, 40, (x, y) => {
+  if (x >= 8 && x < 30 && y >= 8 && y < 30) {
+    if (x >= 15 && x < 20 && y >= 15 && y < 20) return black();
+    return gray();
+  }
+  return white();
+});
+const vD4 = verifyRegions(origD4, redD4, [{ x: 8, y: 8, width: 22, height: 22, kind: "credential", label: "Card number" }]);
+ok("unchanged content region FAILS verification and reports leak",
+  !vD4.verified && vD4.regionsRedacted === 0 && vD4.leakedPatterns.length === 1, JSON.stringify(vD4));
+
+// D5: partially out-of-bounds region that was masked → verified.
+const origD5 = makeImage(40, 40, white);
+const redD5 = makeImage(40, 40, (x, y) => (x >= 30 && y >= 30 ? black() : white()));
+const vD5 = verifyRegions(origD5, redD5, [{ x: 30, y: 30, width: 30, height: 30, kind: "credential", label: "Edge region" }]);
+ok("clamped out-of-bounds region verifies", vD5.verified && vD5.regionsRedacted === 1, JSON.stringify(vD5));
+
+ok("emptyVerification reports nothing-to-verify as verified", emptyVerification().verified === true);
+
+// Ledger: verification entries land and chain stays intact.
+await recordVerification(true, 4, 0);
+const ledgerD = await getLedgerSummary();
+ok("ledger records verification entries", ledgerD.lastEntryType === "verification", `got ${ledgerD.lastEntryType}`);
+ok("ledger chain still intact after verification", ledgerD.chainValid === true);
 
 console.log(`\n${passed} assertions passed. Pipeline verified end-to-end.`);

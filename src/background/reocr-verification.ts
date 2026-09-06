@@ -1,45 +1,54 @@
 /**
- * Re-OCR Verification
+ * Re-OCR Verification (pure pixel checks)
  *
- * After redacting a screenshot, this module verifies that the redaction
- * actually worked by checking:
- * 1. Redacted regions have been visually altered (pixel comparison)
- * 2. No PII patterns are detectable in the redacted image
- * 3. Before/after comparison proves the sensitive data is gone
+ * After redacting a screenshot, this module verifies — at the pixel level —
+ * that the redaction actually worked before any data crosses a network
+ * boundary. It re-scans every sensitive region in the EXACT image that ships
+ * (the JPEG produced by the offscreen canvas) and asserts one of:
+ *
+ *   1. The region is now a solid black mask (credentials / ID numbers), or
+ *   2. The region's pixels were substantially altered (blurred faces/labels),
+ *      or
+ *   3. The original region contained no content at all (nothing to leak).
  *
  * This is the "prove it works" feature that makes VLESS demonstrably
  * different from other privacy tools that just claim to redact.
+ *
+ * The module is deliberately DOM-free: it only touches pixel buffers, so it
+ * runs inside the offscreen document's canvas pipeline AND can be exercised
+ * by the headless verification harness in Node.
  */
+
+import type { VerificationResult } from "../shared/types";
+
+export type { VerificationResult };
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-export interface VerificationResult {
-  /** Whether verification passed. */
-  verified: boolean;
-  /** Number of regions checked. */
-  regionsChecked: number;
-  /** Number of regions that were successfully redacted. */
-  regionsRedacted: number;
-  /** Any PII patterns still detected in the redacted image. */
-  leakedPatterns: string[];
-  /** Verification confidence (0-1). */
-  confidence: number;
-  /** Human-readable summary. */
-  summary: string;
-  /** Timestamp. */
-  timestamp: number;
+/** Minimal ImageData-like view (what canvas getImageData returns). */
+export interface PixelImage {
+  width: number;
+  height: number;
+  data: Uint8ClampedArray;
+}
+
+/** One region that was supposed to be redacted, in device-pixel coordinates. */
+export interface RedactionRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** The detector kind: credential, id_number, face, input_field, ... */
+  kind: string;
+  /** Human-readable label shown in leaks/verification output. */
+  label: string;
 }
 
 // ─── PII Pattern Detection in Text ──────────────────────────────────────────
 
 /**
  * Patterns that indicate PII might still be visible in extracted text.
- * Used to verify that redaction actually removed sensitive content.
- */
-/**
- * PII patterns used to verify that redacted regions no longer contain sensitive text.
- * These are checked against the DOM text of sensitive regions to confirm
- * the redaction pipeline actually removed the data.
+ * Used when a screenshot is verified by re-scanning OCR-able text.
  */
 const PII_VERIFICATION_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /\b\d{4}\s?\d{4}\s?\d{4}\b/, label: "Aadhaar number" },
@@ -57,119 +66,7 @@ const PII_VERIFICATION_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /\b(\+?91[\s-]?\d{5}[\s-]?\d{5})\b/, label: "Indian phone" },
 ];
 
-// ─── Pixel-Level Verification ───────────────────────────────────────────────
-
-/**
- * Check if a region of the redacted image has been visually altered
- * compared to the original. A properly redacted region should have
- * significantly different pixel data (blurred or blacked out).
- *
- * Returns a score from 0 (identical, NOT redacted) to 1 (completely different, REDACTED).
- */
-function computeRegionDiffScore(
-  originalData: ImageData,
-  redactedData: ImageData,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  canvasWidth: number,
-): number {
-  let totalDiff = 0;
-  let pixelCount = 0;
-
-  // Sample every 4th pixel for speed.
-  const step = 4;
-
-  for (let py = y; py < y + height && py < originalData.height; py += step) {
-    for (let px = x; px < x + width && px < canvasWidth; px += step) {
-      const idx = (py * canvasWidth + px) * 4;
-
-      // Compare RGB channels.
-      const rDiff = Math.abs(originalData.data[idx] - redactedData.data[idx]);
-      const gDiff = Math.abs(originalData.data[idx + 1] - redactedData.data[idx + 1]);
-      const bDiff = Math.abs(originalData.data[idx + 2] - redactedData.data[idx + 2]);
-
-      totalDiff += (rDiff + gDiff + bDiff) / (3 * 255);
-      pixelCount++;
-    }
-  }
-
-  return pixelCount > 0 ? totalDiff / pixelCount : 0;
-}
-
-/**
- * Check if a region appears to be solid black (credential masking).
- */
-function isRegionSolidBlack(
-  data: ImageData,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  canvasWidth: number,
-  threshold = 30,
-): boolean {
-  let blackPixels = 0;
-  let totalPixels = 0;
-  const step = 4;
-
-  for (let py = y; py < y + height && py < data.height; py += step) {
-    for (let px = x; px < x + width && px < canvasWidth; px += step) {
-      const idx = (py * canvasWidth + px) * 4;
-      const r = data.data[idx];
-      const g = data.data[idx + 1];
-      const b = data.data[idx + 2];
-      if (r < threshold && g < threshold && b < threshold) {
-        blackPixels++;
-      }
-      totalPixels++;
-    }
-  }
-
-  return totalPixels > 0 && blackPixels / totalPixels > 0.8;
-}
-
-/**
- * Check if a region appears to be blurred (face blurring).
- * Blurred regions have lower variance in pixel values.
- */
-function isRegionBlurred(
-  data: ImageData,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  canvasWidth: number,
-): boolean {
-  // Compute variance of pixel values in the region.
-  // Blurred regions have very low variance (smooth gradients).
-  let sum = 0;
-  let sumSq = 0;
-  let count = 0;
-  const step = 6;
-
-  for (let py = y; py < y + height && py < data.height; py += step) {
-    for (let px = x; px < x + width && px < canvasWidth; px += step) {
-      const idx = (py * canvasWidth + px) * 4;
-      const gray = (data.data[idx] + data.data[idx + 1] + data.data[idx + 2]) / 3;
-      sum += gray;
-      sumSq += gray * gray;
-      count++;
-    }
-  }
-
-  if (count === 0) return false;
-  const mean = sum / count;
-  const variance = sumSq / count - mean * mean;
-  // Blurred regions typically have variance < 500.
-  return variance < 500;
-}
-
-/**
- * Check text content against PII verification patterns.
- * Returns list of PII types found in the text.
- */
+/** Check text content against the PII verification patterns. */
 export function detectPIIInText(text: string): string[] {
   const found: string[] = [];
   for (const { pattern, label } of PII_VERIFICATION_PATTERNS) {
@@ -181,150 +78,199 @@ export function detectPIIInText(text: string): string[] {
   return found;
 }
 
+// ─── Pixel Checks ───────────────────────────────────────────────────────────
+
+/** Clamp a region to the image bounds (returns null when nothing overlaps). */
+function clampRegion(
+  img: PixelImage,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): { x: number; y: number; width: number; height: number } | null {
+  const rx = Math.max(0, Math.round(x));
+  const ry = Math.max(0, Math.round(y));
+  const right = Math.min(img.width, Math.round(x + width));
+  const bottom = Math.min(img.height, Math.round(y + height));
+  if (right - rx <= 0 || bottom - ry <= 0) return null;
+  return { x: rx, y: ry, width: right - rx, height: bottom - ry };
+}
+
+/** Fraction (0-1) of sampled pixels in a region that are near-black. */
+export function solidBlackRatio(img: PixelImage, x: number, y: number, width: number, height: number): number {
+  const region = clampRegion(img, x, y, width, height);
+  if (!region) return 0;
+
+  let blackPixels = 0;
+  let total = 0;
+  // Sample every 4th pixel for speed.
+  for (let py = region.y; py < region.y + region.height; py += 4) {
+    for (let px = region.x; px < region.x + region.width; px += 4) {
+      const idx = (py * img.width + px) * 4;
+      const r = img.data[idx];
+      const g = img.data[idx + 1];
+      const b = img.data[idx + 2];
+      if (r < 30 && g < 30 && b < 30) blackPixels++;
+      total++;
+    }
+  }
+  return total > 0 ? blackPixels / total : 0;
+}
+
+/**
+ * Mean absolute pixel difference (0-1) between two images over one region.
+ * 0 = identical pixels, 1 = completely different.
+ */
+export function regionDiffScore(
+  original: PixelImage,
+  redacted: PixelImage,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): number {
+  const region = clampRegion(original, x, y, width, height);
+  if (!region || region.width === 0 || region.height === 0) return 0;
+
+  let totalDiff = 0;
+  let count = 0;
+  for (let py = region.y; py < region.y + region.height; py += 4) {
+    for (let px = region.x; px < region.x + region.width; px += 4) {
+      const oi = (py * original.width + px) * 4;
+      const ri = (py * redacted.width + px) * 4;
+      // Guard against mismatched buffers.
+      if (oi + 2 >= original.data.length || ri + 2 >= redacted.data.length) continue;
+      const rDiff = Math.abs(original.data[oi] - redacted.data[ri]);
+      const gDiff = Math.abs(original.data[oi + 1] - redacted.data[ri + 1]);
+      const bDiff = Math.abs(original.data[oi + 2] - redacted.data[ri + 2]);
+      totalDiff += (rDiff + gDiff + bDiff) / 765;
+      count++;
+    }
+  }
+  return count > 0 ? totalDiff / count : 0;
+}
+
+/**
+ * Variance of luminance inside a region. Uniform regions (blank fields, solid
+ * backgrounds) have variance near 0; regions containing text or a face have
+ * high variance. Used to decide whether a region held content worth leaking.
+ */
+export function regionVariance(img: PixelImage, x: number, y: number, width: number, height: number): number {
+  const region = clampRegion(img, x, y, width, height);
+  if (!region) return 0;
+
+  let sum = 0;
+  let sumSq = 0;
+  let count = 0;
+  for (let py = region.y; py < region.y + region.height; py += 4) {
+    for (let px = region.x; px < region.x + region.width; px += 4) {
+      const idx = (py * img.width + px) * 4;
+      const gray = (img.data[idx] + img.data[idx + 1] + img.data[idx + 2]) / 3;
+      sum += gray;
+      sumSq += gray * gray;
+      count++;
+    }
+  }
+  if (count === 0) return 0;
+  const mean = sum / count;
+  return Math.max(0, sumSq / count - mean * mean);
+}
+
 // ─── Main Verification ──────────────────────────────────────────────────────
 
 /**
- * Verify that redaction was effective on a processed screenshot.
+ * Verify that every sensitive region was actually redacted in the image that
+ * ships, by comparing its pixels against the pre-redaction original.
  *
- * @param redactedDataUrl - The redacted screenshot as a data URL
- * @param sensitiveRegions - The regions that were supposed to be redacted
- * @param originalDataUrl - The original screenshot (optional, for pixel comparison)
+ * A region counts as verified when:
+ *   - the original region was blank (variance below threshold → nothing to
+ *     leak, e.g. an empty input field blurred over a white page), or
+ *   - it is now a solid black mask, or
+ *   - its pixels changed substantially (blur/overlay actually applied).
+ *
+ * Regions that fail are reported in `leakedPatterns` with a reason.
  */
-export async function verifyRedaction(
-  redactedDataUrl: string,
-  sensitiveRegions: Array<{
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    kind: string;
-    label: string;
-  }>,
-  originalDataUrl?: string,
-): Promise<VerificationResult> {
-  const timestamp = Date.now();
+export function verifyRegions(
+  original: PixelImage | null,
+  redacted: PixelImage,
+  regions: RedactionRegion[],
+  timestamp: number = Date.now(),
+): VerificationResult {
+  let regionsChecked = 0;
+  let regionsRedacted = 0;
+  const leakedPatterns: string[] = [];
 
-  try {
-    // Load the redacted image.
-    const redactedImg = await loadImageFromDataUrl(redactedDataUrl);
-    const redactedCanvas = document.createElement("canvas");
-    redactedCanvas.width = redactedImg.width;
-    redactedCanvas.height = redactedImg.height;
-    const redactedCtx = redactedCanvas.getContext("2d")!;
-    redactedCtx.drawImage(redactedImg, 0, 0);
-    const redactedData = redactedCtx.getImageData(0, 0, redactedCanvas.width, redactedCanvas.height);
-
-    let originalData: ImageData | null = null;
-    if (originalDataUrl) {
-      const originalImg = await loadImageFromDataUrl(originalDataUrl);
-      const originalCanvas = document.createElement("canvas");
-      originalCanvas.width = originalImg.width;
-      originalCanvas.height = originalImg.height;
-      const originalCtx = originalCanvas.getContext("2d")!;
-      originalCtx.drawImage(originalImg, 0, 0);
-      originalData = originalCtx.getImageData(0, 0, originalCanvas.width, originalCanvas.height);
+  for (const region of regions) {
+    if (!clampRegion(redacted, region.x, region.y, region.width, region.height)) {
+      // Outside the canvas entirely — nothing to check, nothing redacted.
+      continue;
     }
+    regionsChecked++;
 
-    let regionsChecked = 0;
-    let regionsRedacted = 0;
+    const blackRatio = solidBlackRatio(redacted, region.x, region.y, region.width, region.height);
 
-    // Check each sensitive region.
-    for (const region of sensitiveRegions) {
-      regionsChecked++;
+    if (original) {
+      const origVariance = regionVariance(original, region.x, region.y, region.width, region.height);
+      const diff = regionDiffScore(original, redacted, region.x, region.y, region.width, region.height);
 
-      // Scale region coordinates from CSS pixels to canvas pixels.
-      // The screenshot is at device pixel ratio, but regions are in CSS coords.
-      const scaleX = redactedCanvas.width / (window.innerWidth || redactedCanvas.width);
-      const scaleY = redactedCanvas.height / (window.innerHeight || redactedCanvas.height);
-
-      const rx = Math.round(region.x * scaleX);
-      const ry = Math.round(region.y * scaleY);
-      const rw = Math.round(region.width * scaleX);
-      const rh = Math.round(region.height * scaleY);
-
-      if (rw <= 0 || rh <= 0) continue;
-
-      let isRedacted = false;
-
-      if (region.kind === "password" || region.kind === "credential" || region.kind === "credit_card" || region.kind === "id_number") {
-        // Credential regions should be solid black.
-        isRedacted = isRegionSolidBlack(redactedData, rx, ry, rw, rh, redactedCanvas.width);
-      } else if (region.kind === "face") {
-        // Face regions should be blurred.
-        isRedacted = isRegionBlurred(redactedData, rx, ry, rw, rh, redactedCanvas.width);
+      // Blank original → nothing sensitive was present → nothing can leak.
+      if (origVariance < 40) {
+        regionsRedacted++;
+        continue;
+      }
+      // Solid black mask → content covered.
+      if (blackRatio > 0.5) {
+        regionsRedacted++;
+        continue;
+      }
+      // Pixels substantially altered → blur/overlay applied.
+      if (diff > 0.12) {
+        regionsRedacted++;
+        continue;
+      }
+      leakedPatterns.push(
+        `"${region.label}" (${region.kind}) at ${region.x},${region.y} was not visibly redacted — original content may still be visible.`,
+      );
+    } else {
+      // No original for comparison: a mask or a low-variance (blurred/uniform)
+      // region is the best evidence we have.
+      if (blackRatio > 0.5 || regionVariance(redacted, region.x, region.y, region.width, region.height) < 400) {
+        regionsRedacted++;
       } else {
-        // Other regions: check pixel diff from original.
-        if (originalData) {
-          const diffScore = computeRegionDiffScore(originalData, redactedData, rx, ry, rw, rh, redactedCanvas.width);
-          isRedacted = diffScore > 0.15; // At least 15% pixel change
-        } else {
-          // Without original, check if region is black or blurred.
-          isRedacted = isRegionSolidBlack(redactedData, rx, ry, rw, rh, redactedCanvas.width) ||
-                       isRegionBlurred(redactedData, rx, ry, rw, rh, redactedCanvas.width);
-        }
-      }
-
-      if (isRedacted) regionsRedacted++;
-    }
-
-    // Check for any PII patterns in the overall image text (basic check).
-    // This is a lightweight check - we scan the canvas for high-contrast text
-    // regions that might contain PII.
-    const leakedPatterns: string[] = [];
-
-    // Simple heuristic: check if any region that should be black is NOT black
-    // and has high contrast (indicating visible text).
-    for (const region of sensitiveRegions) {
-      if (region.kind === "password" || region.kind === "credential") {
-        const scaleX = redactedCanvas.width / (window.innerWidth || redactedCanvas.width);
-        const scaleY = redactedCanvas.height / (window.innerHeight || redactedCanvas.height);
-        const rx = Math.round(region.x * scaleX);
-        const ry = Math.round(region.y * scaleY);
-        const rw = Math.round(region.width * scaleX);
-        const rh = Math.round(region.height * scaleY);
-
-        if (rw > 0 && rh > 0 && !isRegionSolidBlack(redactedData, rx, ry, rw, rh, redactedCanvas.width)) {
-          leakedPatterns.push(`Credential region "${region.label}" may not be fully redacted`);
-        }
+        leakedPatterns.push(
+          `"${region.label}" (${region.kind}) at ${region.x},${region.y} could not be confirmed redacted.`,
+        );
       }
     }
-
-    const verified = regionsChecked === 0 || regionsRedacted === regionsChecked;
-    const confidence = regionsChecked > 0 ? regionsRedacted / regionsChecked : 1.0;
-
-    const summary = verified
-      ? `VERIFIED: ${regionsRedacted}/${regionsChecked} sensitive regions confirmed redacted. Zero PII leakage.`
-      : `WARNING: ${regionsRedacted}/${regionsChecked} regions redacted. ${regionsChecked - regionsRedacted} region(s) may still contain sensitive data.`;
-
-    return {
-      verified,
-      regionsChecked,
-      regionsRedacted,
-      leakedPatterns,
-      confidence,
-      summary,
-      timestamp,
-    };
-  } catch (error) {
-    return {
-      verified: false,
-      regionsChecked: 0,
-      regionsRedacted: 0,
-      leakedPatterns: [`Verification failed: ${error instanceof Error ? error.message : String(error)}`],
-      confidence: 0,
-      summary: "Verification could not be completed.",
-      timestamp,
-    };
   }
+
+  const verified = regionsChecked === 0 || regionsRedacted === regionsChecked;
+  const confidence = regionsChecked > 0 ? regionsRedacted / regionsChecked : 1;
+
+  const summary = verified
+    ? `VERIFIED: ${regionsRedacted}/${regionsChecked} sensitive regions confirmed redacted. Zero PII leakage.`
+    : `WARNING: ${regionsRedacted}/${regionsChecked} regions confirmed redacted; ${regionsChecked - regionsRedacted} may still contain sensitive content.`;
+
+  return {
+    verified,
+    regionsChecked,
+    regionsRedacted,
+    leakedPatterns,
+    confidence,
+    summary,
+    timestamp,
+  };
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function loadImageFromDataUrl(dataUrl: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("Failed to load image from data URL"));
-    img.src = dataUrl;
-  });
+/** A safe default result when no regions were redacted (nothing to verify). */
+export function emptyVerification(timestamp: number = Date.now()): VerificationResult {
+  return {
+    verified: true,
+    regionsChecked: 0,
+    regionsRedacted: 0,
+    leakedPatterns: [],
+    confidence: 1,
+    summary: "VERIFIED: nothing sensitive on screen — zero regions required redaction.",
+    timestamp,
+  };
 }

@@ -16,6 +16,8 @@
  */
 
 import type { DetectedPII } from "../background/pii-detector";
+import { verifyRegions, emptyVerification } from "../background/reocr-verification";
+import type { VerificationResult } from "../shared/types";
 
 // ─── Chrome FaceDetector API (Chrome 100+, Shape Detection API) ─────────────
 
@@ -232,6 +234,7 @@ async function processScreenshot(
   }>;
   redactedCount: number;
   processingTimeMs: number;
+  verification: VerificationResult;
 }> {
   const startTime = performance.now();
   console.log(`[VLESS Offscreen] Processing ${width}x${height} screenshot, DPR=${dpr}, ${sensitiveRegions.length} DOM regions + face detection`);
@@ -246,6 +249,23 @@ async function processScreenshot(
   const ctx = canvas.getContext("2d")!;
   ctx.drawImage(imageBitmap, 0, 0);
   imageBitmap.close();
+
+  // Keep an untouched copy of the original pixels: re-OCR verification and the
+  // skin-color fallback both compare against the pre-redaction image.
+  const originalCanvas = new OffscreenCanvas(width, height);
+  const originalCtx = originalCanvas.getContext("2d")!;
+  originalCtx.drawImage(canvas, 0, 0);
+
+  // Every region actually redacted, in device-pixel coordinates, so the
+  // verification pass can re-scan exactly those pixels in the shipped image.
+  const redactionRegions: Array<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    kind: string;
+    label: string;
+  }> = [];
 
   const allDetections: DetectedPII[] = [];
 
@@ -292,6 +312,7 @@ async function processScreenshot(
       confidence: 0.95,
       label: region.label,
     });
+    redactionRegions.push({ x: rx, y: ry, width: rw, height: rh, kind: region.kind, label: region.label });
   }
 
   // 2. Face detection — try Chrome FaceDetector API first, fallback to skin-color.
@@ -321,8 +342,9 @@ async function processScreenshot(
   }
 
   if (faceBoxes.length === 0) {
-    // Fallback: skin-color heuristic.
-    const imageData = ctx.getImageData(0, 0, width, height);
+    // Fallback: skin-color heuristic on the ORIGINAL pixels (not the already
+    // redacted canvas, which may contain black masks).
+    const imageData = originalCtx.getImageData(0, 0, width, height);
     faceBoxes = detectFacesBySkinColor(imageData, width, height);
     console.log(`[VLESS Offscreen] Skin-color heuristic found ${faceBoxes.length} faces`);
   }
@@ -357,6 +379,7 @@ async function processScreenshot(
         confidence: face.confidence,
         label: "Face detected",
       });
+      redactionRegions.push({ x: rx, y: ry, width: rw, height: rh, kind: "face", label: "Face detected" });
     }
   }
 
@@ -368,6 +391,36 @@ async function processScreenshot(
     reader.onload = () => resolve(reader.result as string);
     reader.readAsDataURL(redactedBlob);
   });
+
+  // 4. Re-OCR verification — decode the EXACT bytes that will be shipped (the
+  // post-JPEG image) and re-scan every redacted region to prove the redaction
+  // actually worked at the pixel level.
+  let verification: VerificationResult = emptyVerification();
+  if (redactionRegions.length > 0) {
+    try {
+      const redactedBitmap = await createImageBitmap(redactedBlob);
+      const verifyCanvas = new OffscreenCanvas(width, height);
+      const verifyCtx = verifyCanvas.getContext("2d")!;
+      verifyCtx.drawImage(redactedBitmap, 0, 0);
+      redactedBitmap.close();
+      const redactedData = verifyCtx.getImageData(0, 0, width, height);
+      const originalData = originalCtx.getImageData(0, 0, width, height);
+      verification = verifyRegions(originalData, redactedData, redactionRegions);
+      console.log(`[VLESS Offscreen] Re-OCR verification: ${verification.summary}`);
+    } catch (error) {
+      verification = {
+        verified: false,
+        regionsChecked: 0,
+        regionsRedacted: 0,
+        leakedPatterns: [
+          `Re-OCR verification could not run: ${error instanceof Error ? error.message : String(error)}`,
+        ],
+        confidence: 0,
+        summary: "WARNING: re-OCR verification could not run.",
+        timestamp: Date.now(),
+      };
+    }
+  }
 
   console.log(`[VLESS Offscreen] Redacted ${allDetections.length} items (${faceBoxes.length} faces, ${sensitiveRegions.length} DOM regions) in ${(performance.now() - startTime).toFixed(0)}ms`);
 
@@ -381,6 +434,7 @@ async function processScreenshot(
     })),
     redactedCount: allDetections.length,
     processingTimeMs: performance.now() - startTime,
+    verification,
   };
 }
 

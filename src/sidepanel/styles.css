@@ -1061,6 +1061,28 @@ body::after {
   font-size: 7px;
 }
 
+/* ─── Re-OCR Verification Badge ──────────────────────────────────── */
+
+.verification-badge {
+  margin-top: 10px;
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border: 1.5px solid;
+  background: var(--color-paper);
+  text-align: center;
+}
+.verification-badge.verified {
+  border-color: var(--color-teal);
+  color: var(--color-teal);
+}
+.verification-badge.warn {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
 /* ─── Utility ──────────────────────────────────────────────────────── */
 
 .hidden { display: none !important; }

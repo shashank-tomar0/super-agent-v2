@@ -364,28 +364,69 @@ export const tokenizer = new PIITokenizer();
  * Produces a display-safe sample of a tokenized value so the audit UI can show
  * WHAT was tokenized without ever exposing the raw value.
  *
- *   "rahul@gmail.com"    → "ra•••@gmail.com"
- *   "9876543210"         → "98••••3210"
- *   "Sharma Traders Pvt" → "Sh••••••••••••"
+ * Masking policy (audited against real PII shapes — no partial-value leaks):
+ *
+ *   "rahul@gmail.com"      → "ra•••@gmail.com"    (2 chars of local part max)
+ *   "1234 5678 9012"       → "•••• •••• ••••"     (Aadhaar: zero real digits)
+ *   "4111-1111-1111-1111"  → "••••-••••-••••-••••" (card: zero real digits)
+ *   "+91 98765 43210"      → "+•• ••••• •••••"    (phone: zero real digits)
+ *   "ABCDE1234F"           → "••••••••••"         (PAN: zero real alphanumerics)
+ *   "Rahul Sharma"         → "Ra••••••••"         (name: first 2 chars only)
+ *
+ * The sample never contains a recoverable fragment: numeric values
+ * (Aadhaar/card/phone/SSN) lose every digit, alphanumeric IDs (PAN/passport)
+ * lose every character, and emails expose at most two characters of the
+ * local part (never enough to identify the account, and nothing else).
  */
 export function maskSample(value: string): string {
-  const v = String(value);
-  if (v.length <= 2) return "••";
+  const v = String(value).trim();
+  if (v.length === 0) return "••";
+  if (v.length <= 2) return "•".repeat(Math.max(2, v.length));
 
-  // Emails keep their domain visible so the kind is obvious.
+  // Emails keep their domain visible so the kind is obvious. Only the first
+  // two characters of the local part stay real — never the full account name.
   const at = v.indexOf("@");
-  if (at > 0 && v.includes(".")) {
+  if (at > 0 && v.includes(".") && v.length > at + 2) {
     const local = v.slice(0, at);
-    const domain = v.slice(at);
-    return `${local.slice(0, 2)}•••${domain}`;
+    const domain = v.slice(at + 1);
+    return `${local.slice(0, 2)}•••@${domain}`;
   }
 
-  // Digits: keep first 2 and last 4.
-  if (/\d/.test(v) && v.replace(/\D/g, "").length >= 8) {
-    const first2 = v.slice(0, 2);
-    const last4 = v.slice(-4);
-    return `${first2}••••${last4}`;
+  const hasLetters = /[A-Za-z]/.test(v);
+  const digitCount = (v.match(/\d/g) ?? []).length;
+  const alnumCount = (v.match(/[A-Za-z0-9]/g) ?? []).length;
+
+  // Alphanumeric identifiers (PAN `ABCDE1234F`, passports, API keys): mask
+  // every letter AND digit — none of the characters are safe to reveal.
+  if (hasLetters && digitCount > 0 && alnumCount >= 6 && !/\s/.test(v.trim())) {
+    return maskAlnum(v);
   }
 
-  return `${v.slice(0, 2)}••••••••`;
+  // Numeric values (Aadhaar, card, SSN, phone, OTP): every digit is replaced
+  // with a bullet. Separators (spaces/dashes/+) are kept so the shape — and
+  // therefore the kind — stays recognisable without leaking a single digit.
+  if (digitCount >= 4) {
+    return maskDigits(v);
+  }
+
+  // Plain text (names, organisations): first two characters only.
+  return `${v.slice(0, 2)}${"•".repeat(Math.min(10, Math.max(6, v.length - 2)))}`;
+}
+
+/** Replace every digit with a bullet, preserving separators and structure. */
+function maskDigits(value: string): string {
+  let out = "";
+  for (const ch of value) {
+    out += /\d/.test(ch) ? "•" : ch;
+  }
+  return out;
+}
+
+/** Replace every letter and digit with a bullet, preserving separators. */
+function maskAlnum(value: string): string {
+  let out = "";
+  for (const ch of value) {
+    out += /[A-Za-z0-9]/.test(ch) ? "•" : ch;
+  }
+  return out;
 }
