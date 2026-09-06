@@ -7,9 +7,9 @@ import type { PageElement, PageSnapshot } from "../shared/types";
  */
 let registry: Element[] = [];
 
-const MAX_ELEMENTS = 120;
-const MAX_NAME = 80;
-const MAX_TEXT = 3000;
+const MAX_ELEMENTS = 80;
+const MAX_NAME = 60;
+const MAX_TEXT = 2000;
 
 const INTERACTIVE_SELECTOR = [
   "a[href]",

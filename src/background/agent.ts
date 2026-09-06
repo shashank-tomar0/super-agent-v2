@@ -49,28 +49,26 @@ const nextId = () => `e${++counter}`;
  */
 function renderSnapshot(snapshot: PageSnapshot): string {
   const lines = snapshot.elements.map((el) => {
-    const parts = [`[${el.id}] ${el.role}`];
-    if (el.name) parts.push(JSON.stringify(el.name));
-    if (el.value) parts.push(`= ${JSON.stringify(el.value)}`);
-    const attrs = el.attrs
-      ? Object.entries(el.attrs)
-          .map(([k, v]) => `${k}=${v}`)
-          .join(" ")
-      : "";
-    if (attrs) parts.push(`(${attrs})`);
+    const parts = [`[${el.id}]${el.role}`];
+    if (el.name) parts.push(JSON.stringify(el.name.length > 40 ? el.name.slice(0, 40) + "..." : el.name));
+    if (el.value) parts.push(`=${JSON.stringify(el.value.length > 30 ? el.value.slice(0, 30) + "..." : el.value)}`);
+    if (el.attrs) {
+      const attrs = Object.entries(el.attrs)
+        .filter(([k]) => k !== "offscreen")
+        .map(([k, v]) => `${k}=${v}`)
+        .join(" ");
+      if (attrs) parts.push(`(${attrs})`);
+    }
     return parts.join(" ");
   });
 
   return [
     `URL: ${snapshot.url}`,
     `Title: ${snapshot.title}`,
-    `Scroll: ${snapshot.scroll.y} of ${snapshot.scroll.maxY}`,
-    "",
-    `Elements${snapshot.truncated ? " (list truncated — scroll for more)" : ""}:`,
+    `Scroll: ${snapshot.scroll.y}/${snapshot.scroll.maxY}`,
+    `Elements${snapshot.truncated ? "(truncated)" : ""}:`,
     ...lines,
-    "",
-    "Page text:",
-    snapshot.text,
+    `Text: ${snapshot.text}`,
   ].join("\n");
 }
 
@@ -160,9 +158,10 @@ export async function runTask(
 
   // Use a shorter system prompt for small local models to avoid context overflow.
   const isLocalModel = settings.provider === "ollama";
+  const isFreeTier = settings.provider === "groq" || settings.provider === "nvidia";
   const systemPrompt = isLocalModel ? SYSTEM_PROMPT_LOCAL : SYSTEM_PROMPT;
-  // Cap snapshot elements to avoid context overflow across all providers.
-  const maxSnapshotElements = isLocalModel ? 20 : 50;
+  // Cap snapshot elements: free-tier providers need smaller snapshots for speed.
+  const maxSnapshotElements = isLocalModel ? 15 : isFreeTier ? 30 : 50;
 
   const planner = createPlanner(settings);
 
@@ -299,6 +298,10 @@ export async function runTask(
 
   // Truncate snapshot to avoid context overflow across all providers.
   if (snapshot && snapshot.elements.length > maxSnapshotElements) {
+    // For free-tier: skip offscreen elements entirely for speed.
+    if (isFreeTier) {
+      snapshot = { ...snapshot, elements: snapshot.elements.filter((e) => !e.attrs?.offscreen) };
+    }
     // Prefer visible elements over offscreen ones.
     const visible = snapshot.elements.filter((e) => !e.attrs?.offscreen);
     const offscreen = snapshot.elements.filter((e) => e.attrs?.offscreen);
@@ -513,15 +516,34 @@ export async function runTask(
       }
 
       // VALIDATE: reject element IDs the client never sent.
+      // When stale, auto-receive and inject fresh snapshot to save an LLM round trip.
       const elementId = call.input.element_id;
       if (typeof elementId === "number") {
         const elExists = snapshot?.elements.some((e) => e.id === elementId);
         if (!elExists) {
-          emit({ kind: "patch", id: stepId, text: `Rejected — element ${elementId} not found in current snapshot.`, pending: false });
+          // Auto-receive: get fresh snapshot so the LLM immediately has new IDs.
+          const freshSnapshot = await controller.snapshot();
+          if (freshSnapshot) {
+            const { sanitized: freshSanitized } = sanitizeSnapshot(freshSnapshot);
+            snapshot = freshSanitized;
+            // For free-tier: skip offscreen elements entirely for speed.
+            if (isFreeTier) {
+              snapshot = { ...snapshot, elements: snapshot.elements.filter((e) => !e.attrs?.offscreen) };
+            }
+            if (snapshot.elements.length > maxSnapshotElements) {
+              const vis = snapshot.elements.filter((e) => !e.attrs?.offscreen);
+              const off = snapshot.elements.filter((e) => e.attrs?.offscreen);
+              snapshot = { ...snapshot, elements: [...vis, ...off].slice(0, maxSnapshotElements), truncated: true };
+            }
+          }
+          const freshRendered = snapshot ? renderSnapshot(snapshot) : "(no snapshot available)";
+          emit({ kind: "patch", id: stepId, text: `Element ${elementId} stale — re-perceived page.`, pending: false });
           results.push({
             id: call.id,
             isError: true,
-            content: `Element ${elementId} does not exist in the current page snapshot. The page may have changed — call read_page to get fresh element IDs.`,
+            content: `Element ${elementId} not found. The page changed. Here are the current elements — pick the right one and retry:
+
+${freshRendered}`,
           });
           continue;
         }
@@ -598,6 +620,9 @@ export async function runTask(
           snapshot = sanitized;
 
           // Truncate fresh snapshots to avoid context overflow.
+          if (isFreeTier) {
+            snapshot = { ...snapshot, elements: snapshot.elements.filter((e) => !e.attrs?.offscreen) };
+          }
           if (snapshot.elements.length > maxSnapshotElements) {
             const vis = snapshot.elements.filter((e) => !e.attrs?.offscreen);
             const off = snapshot.elements.filter((e) => e.attrs?.offscreen);
