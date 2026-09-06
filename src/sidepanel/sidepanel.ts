@@ -550,7 +550,7 @@ async function refreshLearningDashboard(): Promise<void> {
       improvementDelta: s.improvementDelta ?? 0,
       corrections: s.totalUserCorrections ?? 0,
       rulesSummary: response.rulesSummary ?? { total: 0, byCategory: {}, highConfidence: 0, recentlyCreated: 0 },
-      lastReflection: "",
+      lastReflection: response.lastReflection ?? "",
     });
   } else {
     renderLearningDashboard({
@@ -633,7 +633,7 @@ $("new-task-btn").addEventListener("click", () => {
   privacyAuditEl.classList.add("hidden");
   setRunning(false);
   perceptionCount = 0;
-  if (egressBadge) egressBadge.textContent = "0 KB EGRESS";
+  if (egressBadge) egressBadge.textContent = "EGRESS —";
   if (perceptionCounter) perceptionCounter.textContent = "PERCEPTION N° 01";
 });
 

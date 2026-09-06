@@ -31,9 +31,14 @@ async function loadSettings(): Promise<Settings> {
   return normaliseSettings(stored.settings);
 }
 
+const LAST_REFLECTION_KEY = "vless-last-reflection";
+
 /** Emit the current learning stats to the panel (after runs and corrections). */
 async function emitLearningStats(lastReflection: string = ""): Promise<void> {
   try {
+    if (lastReflection) {
+      await chrome.storage.local.set({ [LAST_REFLECTION_KEY]: lastReflection });
+    }
     const stats = await getMemoryStats();
     const rulesSummary = await getRulesSummary();
     emit({
@@ -105,7 +110,7 @@ async function ensureOffscreenDocument(): Promise<void> {
     await (chrome.offscreen as any).createDocument({
       url: "offscreen.html",
       reasons: ["WORKERS", "BLOBS"],
-      justification: "WebGPU inference for on-device vision model and PII detection",
+      justification: "Canvas screenshot redaction, Tesseract OCR verification, and face detection",
     });
   } catch {
     // May already exist.
@@ -471,7 +476,8 @@ chrome.runtime.onMessage.addListener(
         void (async () => {
           const stats = await getMemoryStats();
           const rulesSummary = await getRulesSummary();
-          sendResponse({ stats, rulesSummary });
+          const { [LAST_REFLECTION_KEY]: lastReflection } = await chrome.storage.local.get(LAST_REFLECTION_KEY);
+          sendResponse({ stats, rulesSummary, lastReflection: lastReflection ?? "" });
         })();
         return true;
 
