@@ -89,15 +89,14 @@ export const PROVIDERS: Record<ProviderId, ProviderInfo> = {
     keyUrl: "https://build.nvidia.com",
     keyHint: "nvapi-...",
     suggested: [
-      "meta/llama-3.3-70b-instruct",
-      "meta/llama-3.1-70b-instruct",
-      "deepseek-ai/deepseek-v4-pro",
       "deepseek-ai/deepseek-v4-flash",
+      "deepseek-ai/deepseek-v4-pro",
       "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-      "qwen/qwq-32b",
+      "meta/llama-3.1-70b-instruct",
       "meta/llama-3.1-8b-instruct",
+      "qwen/qwq-32b",
     ],
-    defaultModel: "meta/llama-3.3-70b-instruct",
+    defaultModel: "deepseek-ai/deepseek-v4-flash",
   },
 };
 
