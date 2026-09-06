@@ -81,6 +81,10 @@ export interface VerificationResult {
   /** One-line human summary, e.g. "VERIFIED: 4/4 regions confirmed redacted". */
   summary: string;
   timestamp: number;
+  /** True when a real OCR pass ran over the shipped image. */
+  ocrRan?: boolean;
+  /** Raw OCR text when it surfaced a leak (truncated, evidence for the audit). */
+  leakedText?: string;
 }
 
 /** Screenshot processing result from the privacy pipeline. */

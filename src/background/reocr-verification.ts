@@ -78,6 +78,17 @@ export function detectPIIInText(text: string): string[] {
   return found;
 }
 
+/**
+ * Map an OCR leak label back to a PII kind for the missed-outcome signal.
+ * Pure so the harness can pin the mapping.
+ */
+export function piiKindFromOcrLabel(label: string): string {
+  if (/aadhaar|pan|ssn|passport|ifsc/i.test(label)) return "id_number";
+  if (/card|email|phone/i.test(label)) return "credential";
+  if (/api key|jwt|github|aws|anthropic|openai|token/i.test(label)) return "api_key";
+  return "pii_text";
+}
+
 // ─── Pixel Checks ───────────────────────────────────────────────────────────
 
 /** Clamp a region to the image bounds (returns null when nothing overlaps). */

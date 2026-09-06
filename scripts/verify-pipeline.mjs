@@ -61,7 +61,7 @@ const {
   getApplicableRules, buildSuppressionKeys, recommendsLLMOnly,
 } = await import("../src/background/learned-rules.ts");
 const { recordRedaction, recordVerification, getLedgerSummary, clearLedger } = await import("../src/background/privacy-ledger.ts");
-const { verifyRegions, emptyVerification } = await import("../src/background/reocr-verification.ts");
+const { verifyRegions, emptyVerification, piiKindFromOcrLabel, detectPIIInText } = await import("../src/background/reocr-verification.ts");
 
 // ─── The exact sanitize flow from agent.ts sanitizeSnapshot() ───────────────
 function sanitizeSnapshot(snapshot) {
@@ -438,5 +438,17 @@ ok("FP rule does NOT apply to a different domain",
 // Sanity: verhoeffValid accepts the generated number and rejects garbage.
 ok("verhoeffValid round-trips",
   verhoeffValid(aadhaarDigits) && !verhoeffValid(badAadhaarSeed) && luhnValid("4111111111111111"));
+
+// ─── Scenario G: OCR leak labels map to missed-outcome kinds ───────────────
+console.log("\n=== Scenario G: OCR leak → missed-outcome mapping ===\n");
+ok("OCR card leak maps to credential", piiKindFromOcrLabel("OCR: Card number still visible in the shipped image") === "credential");
+ok("OCR Aadhaar leak maps to id_number", piiKindFromOcrLabel("OCR: Aadhaar number still visible") === "id_number");
+ok("OCR API-key leak maps to api_key", piiKindFromOcrLabel("OCR: OpenAI API key still visible") === "api_key");
+ok("unknown leak label falls back to pii_text", piiKindFromOcrLabel("something weird") === "pii_text");
+ok("detectPIIInText finds card + email in OCR text",
+  detectPIIInText("Card 4111 1111 1111 1111 and rahul@gmail.com here").includes("Card number") &&
+  detectPIIInText("Card 4111 1111 1111 1111 and rahul@gmail.com here").includes("Email address"));
+ok("detectPIIInText finds nothing in clean redacted text",
+  detectPIIInText("Thanks for your order. Regards, Support").length === 0);
 
 console.log(`\n${passed} assertions passed. Pipeline verified end-to-end.`);

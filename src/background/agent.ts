@@ -33,6 +33,7 @@ import type { ActionExperience, PIIExperience, RunExperience } from "./experienc
 import { extractDomain, classifyPageType } from "./experience-memory";
 import { detectContextualPII, contextualToDetectedPII } from "./contextual-pii";
 import { getApplicableRules, buildSuppressionKeys, recommendsLLMOnly } from "./learned-rules";
+import { piiKindFromOcrLabel } from "./reocr-verification";
 import {
   initLedger, recordSnapshot, recordDetections,
   recordAction as ledgerRecordAction,
@@ -249,6 +250,24 @@ export async function runTask(
     trackedPII.push({ kind, method, outcome: "false_positive", confidence });
   }
 
+  // Re-OCR (real OCR over the shipped pixels) evidence for this run: a leak
+  // the page detectors never saw is an organic MISSED outcome — this is the
+  // ground truth that makes recall measurable.
+  const ocrLeakSeen = new Set<string>();
+  let reocrVerified = true;
+  const reocrLeakedPII: string[] = [];
+  function noteVerification(v: VerificationResult | undefined): void {
+    if (!v) return;
+    if (!v.verified) reocrVerified = false;
+    for (const leak of v.leakedPatterns ?? []) {
+      if (ocrLeakSeen.has(leak)) continue;
+      ocrLeakSeen.add(leak);
+      reocrLeakedPII.push(leak);
+      const label = leak.replace(/^OCR:\s*/, "");
+      trackedPII.push({ kind: piiKindFromOcrLabel(label), method: "ocr", outcome: "missed", confidence: 0.6 });
+    }
+  }
+
   // ── Privacy Budget Ledger ──
   await initLedger();
 
@@ -383,6 +402,7 @@ export async function runTask(
           confidence: d.confidence,
         }));
         const verification = processed.verification;
+        noteVerification(verification);
 
         emit({
           kind: "entry",
@@ -529,6 +549,8 @@ export async function runTask(
       estimatedTokens,
       rulesApplied: sanitizeCtx.ruleCount,
       egressBytes: sessionEgressBytes,
+      reocrVerified,
+      reocrLeakedPII,
       rulesGenerated: [],
       userCorrections: [],
     };
@@ -873,6 +895,7 @@ ${freshRendered}`,
                   confidence: d.confidence,
                 }));
                 const verification = processed.verification;
+                noteVerification(verification);
 
                 observation += `\n\n[Screenshot: ${processed.redactedCount} PII redacted]`;
                 if (verification && verification.regionsChecked > 0) {

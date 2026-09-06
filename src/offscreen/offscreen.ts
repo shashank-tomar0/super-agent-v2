@@ -16,7 +16,8 @@
  */
 
 import type { DetectedPII } from "../background/pii-detector";
-import { verifyRegions, emptyVerification } from "../background/reocr-verification";
+import { verifyRegions, emptyVerification, detectPIIInText } from "../background/reocr-verification";
+import { ocrDataUrl } from "./ocr";
 import type { VerificationResult } from "../shared/types";
 
 // ─── Chrome FaceDetector API (Chrome 100+, Shape Detection API) ─────────────
@@ -406,6 +407,34 @@ async function processScreenshot(
       const redactedData = verifyCtx.getImageData(0, 0, width, height);
       const originalData = originalCtx.getImageData(0, 0, width, height);
       verification = verifyRegions(originalData, redactedData, redactionRegions);
+
+      // 5. Real OCR pass over the exact bytes we ship: re-read the redacted
+      //    JPEG and scan its recognized text for remaining PII patterns. Any
+      //    hit flips the verdict to WARNING with the leaked label + raw text
+      //    as evidence. Best-effort — on failure we keep the pixel result.
+      const ocrText = await ocrDataUrl(redactedDataUrl);
+      if (ocrText) {
+        const ocrLeaks = detectPIIInText(ocrText);
+        verification = {
+          ...verification,
+          ocrRan: true,
+          leakedText: ocrLeaks.length > 0 ? ocrText.slice(0, 300) : undefined,
+        };
+        if (ocrLeaks.length > 0) {
+          verification.verified = false;
+          verification.leakedPatterns = [
+            ...verification.leakedPatterns,
+            ...ocrLeaks.map((l) => `OCR: ${l} still visible in the shipped image`),
+          ];
+          verification.confidence = Math.min(verification.confidence, 0.3);
+          verification.summary =
+            `WARNING: OCR found ${ocrLeaks.join(", ")} still readable in the redacted image. ` +
+            `Pixel regions: ${verification.regionsRedacted}/${verification.regionsChecked} confirmed.`;
+        } else {
+          verification.summary =
+            `${verification.summary} OCR re-read the shipped pixels and found no PII text.`;
+        }
+      }
       console.log(`[VLESS Offscreen] Re-OCR verification: ${verification.summary}`);
     } catch (error) {
       verification = {

@@ -8,6 +8,25 @@ await mkdir("dist", { recursive: true });
 await mkdir("dist/offscreen", { recursive: true });
 await mkdir("dist/models", { recursive: true });
 
+// ─── OCR vendor assets (tesseract.js) ──────────────────────────────────────
+// Static files the offscreen document loads via chrome.runtime.getURL —
+// never fetched from a CDN, so OCR works offline and under MV3 CSP.
+await mkdir("dist/vendor", { recursive: true });
+await mkdir("dist/vendor/tesseract-core", { recursive: true });
+await mkdir("dist/vendor/lang", { recursive: true });
+await cp("node_modules/tesseract.js/dist/worker.min.js", "dist/vendor/worker.min.js");
+for (const f of [
+  "tesseract-core-simd-lstm.js", "tesseract-core-simd-lstm.wasm", "tesseract-core-simd-lstm.wasm.js",
+  "tesseract-core-relaxedsimd-lstm.js", "tesseract-core-relaxedsimd-lstm.wasm", "tesseract-core-relaxedsimd-lstm.wasm.js",
+  "tesseract-core-lstm.js", "tesseract-core-lstm.wasm", "tesseract-core-lstm.wasm.js",
+]) {
+  await cp(`node_modules/tesseract.js-core/${f}`, `dist/vendor/tesseract-core/${f}`);
+}
+await cp(
+  "node_modules/@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz",
+  "dist/vendor/lang/eng.traineddata.gz",
+);
+
 // Static assets are copied verbatim; only the TS entrypoints get bundled.
 await cp("src/manifest.json", "dist/manifest.json");
 await cp("src/sidepanel/index.html", "dist/sidepanel.html");
