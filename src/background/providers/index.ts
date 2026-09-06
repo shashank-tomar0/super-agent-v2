@@ -2,6 +2,7 @@ import type { Settings } from "../../shared/types";
 import { createAnthropicPlanner } from "./anthropic";
 import { createOpenAIPlanner } from "./openai";
 import { createOllamaPlanner } from "./ollama";
+import { createGroqPlanner } from "./groq";
 import type { Planner } from "./types";
 import { PlannerError } from "./types";
 
@@ -24,6 +25,10 @@ export function createPlanner(settings: Settings): Planner {
     throw new PlannerError(
       `No API key set for ${provider}. Open the extension options and add one.`,
     );
+  }
+
+  if (provider === "groq") {
+    return createGroqPlanner(apiKey, model);
   }
 
   return provider === "anthropic"

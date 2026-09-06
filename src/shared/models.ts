@@ -70,6 +70,20 @@ export const PROVIDERS: Record<ProviderId, ProviderInfo> = {
     ],
     defaultModel: "qwen2.5:1.5b",
   },
+  groq: {
+    id: "groq",
+    label: "Groq",
+    keyUrl: "https://console.groq.com/keys",
+    keyHint: "gsk_...",
+    suggested: [
+      "llama-3.3-70b-versatile",
+      "llama-3.1-8b-instant",
+      "openai/gpt-oss-120b",
+      "openai/gpt-oss-20b",
+      "qwen/qwen3.6-27b",
+    ],
+    defaultModel: "llama-3.3-70b-versatile",
+  },
 };
 
 export const PROVIDER_IDS = Object.keys(PROVIDERS) as ProviderId[];
@@ -101,6 +115,20 @@ export async function listModels(
     if (!response.ok) throw new Error(`OpenRouter returned ${response.status}`);
     const body = (await response.json()) as { data?: { id?: string }[] };
     return (body.data ?? []).map((m) => m.id).filter((id): id is string => Boolean(id)).sort();
+  }
+
+  if (provider === "groq") {
+    const response = await fetch("https://api.groq.com/openai/v1/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!response.ok) throw new Error(`Groq returned ${response.status}`);
+    const body = (await response.json()) as { data?: { id?: string }[] };
+    return (body.data ?? [])
+      .map((m) => m.id)
+      .filter((id): id is string => Boolean(id))
+      // Only include text/chat models, not whisper or embedding models.
+      .filter((id) => /^(llama|gpt|qwen|mixtral|gemma)/.test(id))
+      .sort();
   }
 
   if (!apiKey) throw new Error("Enter an API key first.");

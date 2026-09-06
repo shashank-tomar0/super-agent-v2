@@ -78,6 +78,7 @@ const ENDPOINTS: Record<Exclude<ProviderId, "anthropic">, string> = {
   openai: "https://api.openai.com/v1",
   openrouter: "https://openrouter.ai/api/v1",
   ollama: "http://localhost:11434/v1",
+  groq: "https://api.groq.com/openai/v1",
 };
 
 /**
@@ -88,10 +89,11 @@ export function createOpenAIPlanner(
   provider: Exclude<ProviderId, "anthropic">,
   apiKey: string,
   model: string,
+  customBaseURL?: string,
 ): Planner {
   const client = new OpenAI({
     apiKey,
-    baseURL: ENDPOINTS[provider],
+    baseURL: customBaseURL ?? ENDPOINTS[provider],
     dangerouslyAllowBrowser: true,
     defaultHeaders:
       provider === "openrouter"
@@ -104,8 +106,9 @@ export function createOpenAIPlanner(
     openai: "OpenAI",
     openrouter: "OpenRouter",
     ollama: "Ollama (Local)",
+    groq: "Groq",
   };
-  const label = labels[provider];
+  const label = labels[provider] ?? provider;
 
   return {
     label: `${label} ${model}`,
