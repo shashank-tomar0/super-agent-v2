@@ -342,8 +342,46 @@ export async function runTask(
     return count >= LOOP_THRESHOLD;
   }
 
+  // ── Cleanup: emit experience and clear vault on ANY exit path ──
+  let experienceEmitted = false;
+  function finishTask(): void {
+    if (experienceEmitted) return;
+    experienceEmitted = true;
+
+    const hasSuccessfulActions = trackedActions.some((a) => a.success);
+    taskSuccess = !transcriptHasErrors() && (hasSuccessfulActions || trackedActions.length === 0);
+
+    emit({
+      kind: "entry",
+      entry: {
+        id: nextId(),
+        role: "system",
+        text: `Task ended. Total PII items redacted: ${piiTotal}. Token vault cleared.`,
+      },
+    });
+
+    const experience: RunExperience = {
+      id: `exp-${runStartTime}`,
+      timestamp: runStartTime,
+      task,
+      domain,
+      pageType,
+      piiDetections: trackedPII,
+      actions: trackedActions,
+      taskSuccess,
+      durationMs: Date.now() - runStartTime,
+      piiRedacted: piiTotal,
+      estimatedTokens,
+      rulesGenerated: [],
+      userCorrections: [],
+    };
+
+    emit({ kind: "experience", experience } as unknown as AgentEvent);
+    tokenizer.clear();
+  }
+
   for (let step = 0; step < settings.maxSteps; step++) {
-    if (signal.aborted) return;
+    if (signal.aborted) { finishTask(); return; }
 
     // Loop detection — if the agent is stuck repeating the same action, break.
     if (isLooping()) {
@@ -355,6 +393,7 @@ export async function runTask(
           text: `Loop detected: repeated "${recentActions[recentActions.length - 1].name}" ${LOOP_THRESHOLD} times. Stopping to prevent infinite loop. The page may need manual interaction.`,
         },
       });
+      finishTask();
       return;
     }
 
@@ -443,7 +482,7 @@ export async function runTask(
         onText,
       });
     } catch (error) {
-      if (signal.aborted) return;
+      if (signal.aborted) { finishTask(); return; }
       errorCount++;
       emit({
         kind: "entry",
@@ -453,6 +492,7 @@ export async function runTask(
           text: error instanceof Error ? error.message : String(error),
         },
       });
+      finishTask();
       return;
     }
 
@@ -468,11 +508,12 @@ export async function runTask(
           text: `The model declined this request (${turn.refusal ?? "unspecified"}).`,
         },
       });
+      finishTask();
       return;
     }
 
     // No tools left to call — the model has given its final answer.
-    if (turn.toolCalls.length === 0) return;
+    if (turn.toolCalls.length === 0) { finishTask(); return; }
 
     const results: ToolOutcome[] = [];
 
@@ -685,41 +726,8 @@ ${freshRendered}`,
     messages.push({ role: "tool", results });
   }
 
-  // Mark task success: succeeded if we had at least one successful action and no critical errors.
-  const hasSuccessfulActions = trackedActions.some((a) => a.success);
-  taskSuccess = !transcriptHasErrors() && (hasSuccessfulActions || trackedActions.length === 0);
-
-  emit({
-    kind: "entry",
-    entry: {
-      id: nextId(),
-      role: "system",
-      text: `Task ended. Total PII items redacted: ${piiTotal}. Token vault cleared.`,
-    },
-  });
-
-  // Build and emit the experience for self-improvement.
-  const experience: RunExperience = {
-    id: `exp-${runStartTime}`,
-    timestamp: runStartTime,
-    task,
-    domain,
-    pageType,
-    piiDetections: trackedPII,
-    actions: trackedActions,
-    taskSuccess,
-    durationMs: Date.now() - runStartTime,
-    piiRedacted: piiTotal,
-    estimatedTokens,
-    rulesGenerated: [],
-    userCorrections: [],
-  };
-
-  // Emit experience to service worker for reflection and memory storage.
-  emit({ kind: "experience", experience } as unknown as AgentEvent);
-
-  // Clear the token vault when the task ends.
-  tokenizer.clear();
+  // Normal loop completion — emit experience.
+  finishTask();
 
   function transcriptHasErrors(): boolean {
     return errorCount > 0;
