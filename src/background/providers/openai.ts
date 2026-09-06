@@ -8,7 +8,8 @@ import type {
   StopReason,
   ToolSpec,
 } from "./types";
-import { PlannerError, parseArguments } from "./types";
+import { parseArguments } from "./types";
+import { describeOpenAIError } from "./errors";
 
 type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 
@@ -135,7 +136,7 @@ export function createOpenAIPlanner(
           { signal },
         );
       } catch (error) {
-        throw describe(error, label);
+        throw describeOpenAIError(error, label);
       }
 
       let text = "";
@@ -168,7 +169,7 @@ export function createOpenAIPlanner(
           }
         }
       } catch (error) {
-        throw describe(error, label);
+        throw describeOpenAIError(error, label);
       }
 
       const toolCalls = Array.from(partials.entries())
@@ -193,23 +194,4 @@ export function createOpenAIPlanner(
       };
     },
   };
-}
-
-function describe(error: unknown, label: string): Error {
-  if (error instanceof OpenAI.AuthenticationError) {
-    return new PlannerError(`${label} rejected your API key. Check it in the extension options.`);
-  }
-  if (error instanceof OpenAI.RateLimitError) {
-    return new PlannerError(`${label} rate-limited this request. Wait a moment and retry.`);
-  }
-  if (error instanceof OpenAI.NotFoundError) {
-    return new PlannerError(
-      `${label} does not recognise that model id, or your key cannot access it. ` +
-        `Pick another model in the extension options.`,
-    );
-  }
-  if (error instanceof OpenAI.APIError) {
-    return new PlannerError(`${label} API error ${error.status}: ${error.message}`);
-  }
-  return error instanceof Error ? error : new Error(String(error));
 }

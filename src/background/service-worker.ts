@@ -31,6 +31,33 @@ async function loadSettings(): Promise<Settings> {
   return normaliseSettings(stored.settings);
 }
 
+/** Emit the current learning stats to the panel (after runs and corrections). */
+async function emitLearningStats(lastReflection: string = ""): Promise<void> {
+  try {
+    const stats = await getMemoryStats();
+    const rulesSummary = await getRulesSummary();
+    emit({
+      kind: "learning-update",
+      stats: {
+        totalRuns: stats.totalRuns,
+        successRate: Math.round(stats.averageSuccessRate * 100),
+        piiDetected: stats.totalPIIDetected,
+        piiRedacted: stats.totalPIIRedacted,
+        falsePositives: stats.totalFalsePositives,
+        missedPII: stats.totalMissedPII,
+        sitesVisited: stats.sitesVisited,
+        rulesLearned: stats.rulesLearned,
+        improvementDelta: stats.improvementDelta,
+        corrections: stats.totalUserCorrections,
+        rulesSummary,
+        lastReflection,
+      },
+    } as AgentEvent);
+  } catch (err) {
+    console.warn("[VLESS] Emitting learning stats failed:", err);
+  }
+}
+
 /** Broadcasts to the panel; a closed panel simply has no receiver. */
 function emit(event: AgentEvent): void {
   if (event.kind === "entry") {
@@ -372,24 +399,7 @@ async function start(task: string, tabId: number): Promise<void> {
         }
 
         // Emit learning stats to the panel.
-        const stats = await getMemoryStats();
-        const rulesSummary = await getRulesSummary();
-        emit({
-          kind: "learning-update",
-          stats: {
-            totalRuns: stats.totalRuns,
-            successRate: Math.round(stats.averageSuccessRate * 100),
-            piiDetected: stats.totalPIIDetected,
-            piiRedacted: stats.totalPIIRedacted,
-            falsePositives: stats.totalFalsePositives,
-            missedPII: stats.totalMissedPII,
-            sitesVisited: stats.sitesVisited,
-            rulesLearned: stats.rulesLearned,
-            improvementDelta: stats.improvementDelta,
-            rulesSummary,
-            lastReflection: reflectionResult.summary,
-          },
-        } as AgentEvent);
+        await emitLearningStats(reflectionResult.summary);
       } catch (err) {
         console.warn("[VLESS] Reflection failed:", err);
       }
@@ -462,6 +472,35 @@ chrome.runtime.onMessage.addListener(
           const stats = await getMemoryStats();
           const rulesSummary = await getRulesSummary();
           sendResponse({ stats, rulesSummary });
+        })();
+        return true;
+
+      case "record-correction":
+        void (async () => {
+          const { recordUserCorrection } = await import("./experience-memory");
+          const updated = await recordUserCorrection({
+            experienceId: command.experienceId,
+            kind: command.piiKind,
+            label: command.label,
+            correction: command.correction,
+          });
+          if (!updated) {
+            sendResponse({ ok: false, reason: "No matching run found to correct." });
+            return;
+          }
+          // Reflect over the corrected view so a false-positive rule lands now
+          // and later runs suppress this detection on the same page type.
+          const existingRules = await getLearnedRules();
+          const reflectionResult = reflectOnRun(updated, existingRules);
+          if (reflectionResult.newRules.length > 0) {
+            await applyReflectionResults(reflectionResult);
+          }
+          await emitLearningStats(reflectionResult.summary);
+          sendResponse({
+            ok: true,
+            experienceId: updated.id,
+            rulesGenerated: reflectionResult.newRules.length,
+          });
         })();
         return true;
 

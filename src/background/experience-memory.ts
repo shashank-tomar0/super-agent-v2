@@ -98,6 +98,8 @@ export interface MemoryStats {
   rulesLearned: number;
   /** Improvement trend: success rate over last 5 runs vs first 5 runs. */
   improvementDelta: number;
+  /** User-flagged false-positive corrections (measured ground truth). */
+  totalUserCorrections: number;
 }
 
 // ─── Storage ────────────────────────────────────────────────────────────────
@@ -179,6 +181,7 @@ export async function getMemoryStats(): Promise<MemoryStats> {
       sitesVisited: 0,
       rulesLearned: 0,
       improvementDelta: 0,
+      totalUserCorrections: 0,
     };
   }
 
@@ -191,12 +194,14 @@ export async function getMemoryStats(): Promise<MemoryStats> {
   let totalFalsePositives = 0;
   let totalMissedPII = 0;
   let totalRulesLearned = 0;
+  let totalUserCorrections = 0;
 
   const domains = new Set<string>();
 
   for (const exp of experiences) {
     domains.add(exp.domain);
     totalRulesLearned += exp.rulesGenerated.length;
+    totalUserCorrections += exp.userCorrections?.length ?? 0;
 
     for (const pii of exp.piiDetections) {
       totalPIIDetected++;
@@ -241,7 +246,55 @@ export async function getMemoryStats(): Promise<MemoryStats> {
     sitesVisited: domains.size,
     rulesLearned: totalRulesLearned,
     improvementDelta,
+    totalUserCorrections,
   };
+}
+
+/**
+ * A user-flagged correction on a completed run — the human is ground truth.
+ *
+ * Flips the run's first matching true-positive detection to a false positive
+ * (or records one when nothing matched), and appends the correction to the
+ * experience. Reflection re-runs against the corrected experience so a real
+ * false-positive rule is generated immediately and later runs suppress it.
+ *
+ * Returns the corrected experience, or null when no experience matches.
+ */
+export async function recordUserCorrection(correction: {
+  experienceId?: string;
+  kind: string;
+  label: string;
+  correction: "false_positive";
+}): Promise<RunExperience | null> {
+  const experiences = await getExperiences();
+  const target = correction.experienceId
+    ? experiences.find((e) => e.id === correction.experienceId)
+    : experiences[0];
+  if (!target) return null;
+
+  const hit = target.piiDetections.find(
+    (p) => p.kind === correction.kind && p.outcome === "true_positive",
+  );
+  if (hit) {
+    // Keep the original method so reflection targets the right detector and
+    // the suppression key (`kind:method`) matches what the agent consults.
+    hit.outcome = "false_positive";
+  } else {
+    target.piiDetections.push({
+      kind: correction.kind,
+      method: "user",
+      outcome: "false_positive",
+      confidence: 0.9,
+    });
+  }
+
+  target.userCorrections = target.userCorrections ?? [];
+  target.userCorrections.push(
+    `user:${correction.correction}:${correction.kind}:${correction.label}`,
+  );
+
+  await saveExperiences(experiences);
+  return target;
 }
 
 /**

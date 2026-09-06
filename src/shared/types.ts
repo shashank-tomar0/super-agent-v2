@@ -188,6 +188,8 @@ export type AgentEvent =
         sitesVisited: number;
         rulesLearned: number;
         improvementDelta: number;
+        /** User-flagged corrections across all runs (ground truth for precision). */
+        corrections: number;
         rulesSummary: {
           total: number;
           byCategory: Record<string, number>;
@@ -217,7 +219,18 @@ export type PanelCommand =
   | { kind: "delete-history"; sessionId?: string; clearAll?: boolean }
   | { kind: "get-learning-stats" }
   | { kind: "clear-learning" }
-  | { kind: "get-ledger" };
+  | { kind: "get-ledger" }
+  | {
+      kind: "record-correction";
+      /** Omit to correct the most recent run. */
+      experienceId?: string;
+      /** PII kind being corrected (e.g. "credential", "id_number", "face"). */
+      piiKind: string;
+      /** Human label shown on the chip. */
+      label: string;
+      /** The user says this detection was wrong. */
+      correction: "false_positive";
+    };
 
 export interface Settings {
   provider: ProviderId;

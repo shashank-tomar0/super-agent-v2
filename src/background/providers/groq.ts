@@ -19,7 +19,8 @@ import type {
   StopReason,
   ToolSpec,
 } from "./types";
-import { PlannerError, parseArguments } from "./types";
+import { parseArguments } from "./types";
+import { describeOpenAIError } from "./errors";
 
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 
@@ -106,7 +107,7 @@ export function createGroqPlanner(apiKey: string, model: string): Planner {
           { signal },
         );
       } catch (error) {
-        throw describe(error);
+        throw describeOpenAIError(error, "Groq");
       }
 
       let text = "";
@@ -136,7 +137,7 @@ export function createGroqPlanner(apiKey: string, model: string): Planner {
           }
         }
       } catch (error) {
-        throw describe(error);
+        throw describeOpenAIError(error, "Groq");
       }
 
       const toolCalls = Array.from(partials.entries())
@@ -159,22 +160,4 @@ export function createGroqPlanner(apiKey: string, model: string): Planner {
       };
     },
   };
-}
-
-function describe(error: unknown): Error {
-  if (error instanceof OpenAI.AuthenticationError) {
-    return new PlannerError("Groq rejected your API key. Check it in the extension options.");
-  }
-  if (error instanceof OpenAI.RateLimitError) {
-    return new PlannerError("Groq rate-limited this request. Wait a moment and retry.");
-  }
-  if (error instanceof OpenAI.NotFoundError) {
-    return new PlannerError(
-      "Groq does not recognise that model id. Pick another one in the extension options.",
-    );
-  }
-  if (error instanceof OpenAI.APIError) {
-    return new PlannerError(`Groq API error ${error.status}: ${error.message}`);
-  }
-  return error instanceof Error ? error : new Error(String(error));
 }

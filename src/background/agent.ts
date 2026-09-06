@@ -95,6 +95,27 @@ interface SanitizeCtx {
 
 const EMPTY_SANITIZE_CTX: SanitizeCtx = { fpKeys: new Set(), llmOnly: false, ruleCount: 0 };
 
+/** Readable audit label per PII kind (visual detections already carry theirs). */
+const AUDIT_KIND_LABELS: Record<string, string> = {
+  credential: "Credential (text)",
+  id_number: "ID number (text)",
+  api_key: "API key",
+  pii_text: "PII text",
+  face: "Face",
+};
+
+/** Map DOM sanitize detections into the audit shape so the proof view shows
+ * what was actually tokenized/redacted from page text, not just visuals. */
+function auditFromDetections(
+  detections: Array<{ kind: string; confidence: number }>,
+): Array<{ kind: string; label: string; confidence: number }> {
+  return detections.map((d) => ({
+    kind: d.kind,
+    label: AUDIT_KIND_LABELS[d.kind] ?? d.kind,
+    confidence: d.confidence,
+  }));
+}
+
 /**
  * Apply the full privacy pipeline to a snapshot before it reaches the LLM.
  * Returns a sanitized snapshot, the kept PII list, and the false-positive
@@ -361,12 +382,17 @@ export async function runTask(
   }
 
   let piiTotal = 0;
+  // Latest DOM (text) detections for the audit view — the screenshots only
+  // carry visual detections, so without this the proof panel hides the emails,
+  // phones and ID numbers the DOM sanitizer actually tokenized.
+  let lastDomDetections: Array<{ kind: string; confidence: number }> = [];
   if (snapshot) {
     // Record snapshot in privacy ledger.
     recordSnapshot(snapshot.url, snapshot.title, snapshot.elements.length).catch(() => {});
 
     const { sanitized, piiCount, detections, suppressed, rejected } = sanitizeSnapshot(snapshot, sanitizeCtx);
     snapshot = sanitized;
+    lastDomDetections = detections;
 
     // Record detections in privacy ledger.
     if (detections.length > 0) {
@@ -469,11 +495,12 @@ export async function runTask(
           });
         }
         piiTotal += processed.redactedCount;
-        // Record for privacy audit.
+        // Record for privacy audit — DOM textual detections AND visual ones,
+        // so the panel shows every PII item this snapshot handled.
         recordAudit?.({
           original: screenshotResult.original,
           redacted: processed.redactedDataUrl,
-          detections: visualDetections,
+          detections: [...visualDetections, ...auditFromDetections(lastDomDetections)],
           tokens: tokenizer.getTokenSummary(),
           redactedCount: processed.redactedCount,
           verification,
@@ -896,6 +923,7 @@ ${freshRendered}`,
           // learned false-positive suppression included).
           const { sanitized, piiCount, detections: freshDetections, suppressed: freshSuppressed, rejected: freshRejected } = sanitizeSnapshot(snapshot, sanitizeCtx);
           snapshot = sanitized;
+          lastDomDetections = freshDetections;
 
           // Truncate fresh snapshots to avoid context overflow.
           if (isFreeTier) {
@@ -966,11 +994,11 @@ ${freshRendered}`,
                   });
                 }
                 piiTotal += processed.redactedCount;
-                // Record for privacy audit.
+                // Record for privacy audit — fresh DOM detections + visuals.
                 recordAudit?.({
                   original: screenshotResult.original,
                   redacted: processed.redactedDataUrl,
-                  detections: visualDetections,
+                  detections: [...visualDetections, ...auditFromDetections(freshDetections)],
                   tokens: tokenizer.getTokenSummary(),
                   redactedCount: processed.redactedCount,
                   verification,

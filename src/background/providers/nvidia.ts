@@ -22,7 +22,8 @@ import type {
   StopReason,
   ToolSpec,
 } from "./types";
-import { PlannerError, parseArguments } from "./types";
+import { parseArguments } from "./types";
+import { describeOpenAIError } from "./errors";
 
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 
@@ -109,7 +110,7 @@ export function createNvidiaPlanner(apiKey: string, model: string): Planner {
           { signal },
         );
       } catch (error) {
-        throw describe(error);
+        throw describeOpenAIError(error, "NVIDIA");
       }
 
       let text = "";
@@ -139,7 +140,7 @@ export function createNvidiaPlanner(apiKey: string, model: string): Planner {
           }
         }
       } catch (error) {
-        throw describe(error);
+        throw describeOpenAIError(error, "NVIDIA");
       }
 
       const toolCalls = Array.from(partials.entries())
@@ -162,22 +163,4 @@ export function createNvidiaPlanner(apiKey: string, model: string): Planner {
       };
     },
   };
-}
-
-function describe(error: unknown): Error {
-  if (error instanceof OpenAI.AuthenticationError) {
-    return new PlannerError("NVIDIA rejected your API key. Get one free at build.nvidia.com.");
-  }
-  if (error instanceof OpenAI.RateLimitError) {
-    return new PlannerError("NVIDIA rate-limited this request (40 RPM free tier). Wait a moment and retry.");
-  }
-  if (error instanceof OpenAI.NotFoundError) {
-    return new PlannerError(
-      "NVIDIA does not recognise that model id. Check build.nvidia.com/models for available models.",
-    );
-  }
-  if (error instanceof OpenAI.APIError) {
-    return new PlannerError(`NVIDIA API error ${error.status}: ${error.message}`);
-  }
-  return error instanceof Error ? error : new Error(String(error));
 }

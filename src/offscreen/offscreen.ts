@@ -16,7 +16,7 @@
  */
 
 import type { DetectedPII } from "../background/pii-detector";
-import { verifyRegions, emptyVerification, detectPIIInText } from "../background/reocr-verification";
+import { verifyRegions, emptyVerification, detectPIIInText, layoutRegionCrops } from "../background/reocr-verification";
 import { ocrDataUrl } from "./ocr";
 import type { VerificationResult } from "../shared/types";
 
@@ -386,12 +386,7 @@ async function processScreenshot(
 
   // 3. Convert to Blob.
   const redactedBlob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
-
-  const reader = new FileReader();
-  const redactedDataUrl = await new Promise<string>((resolve) => {
-    reader.onload = () => resolve(reader.result as string);
-    reader.readAsDataURL(redactedBlob);
-  });
+  const redactedDataUrl = await blobToDataUrl(redactedBlob);
 
   // 4. Re-OCR verification — decode the EXACT bytes that will be shipped (the
   // post-JPEG image) and re-scan every redacted region to prove the redaction
@@ -408,32 +403,56 @@ async function processScreenshot(
       const originalData = originalCtx.getImageData(0, 0, width, height);
       verification = verifyRegions(originalData, redactedData, redactionRegions);
 
-      // 5. Real OCR pass over the exact bytes we ship: re-read the redacted
-      //    JPEG and scan its recognized text for remaining PII patterns. Any
-      //    hit flips the verdict to WARNING with the leaked label + raw text
-      //    as evidence. Best-effort — on failure we keep the pixel result.
-      const ocrText = await ocrDataUrl(redactedDataUrl);
-      if (ocrText) {
-        const ocrLeaks = detectPIIInText(ocrText);
-        verification = {
-          ...verification,
-          ocrRan: true,
-          leakedText: ocrLeaks.length > 0 ? ocrText.slice(0, 300) : undefined,
-        };
-        if (ocrLeaks.length > 0) {
-          verification.verified = false;
-          verification.leakedPatterns = [
-            ...verification.leakedPatterns,
-            ...ocrLeaks.map((l) => `OCR: ${l} still visible in the shipped image`),
-          ];
-          verification.confidence = Math.min(verification.confidence, 0.3);
-          verification.summary =
-            `WARNING: OCR found ${ocrLeaks.join(", ")} still readable in the redacted image. ` +
-            `Pixel regions: ${verification.regionsRedacted}/${verification.regionsChecked} confirmed.`;
-        } else {
-          verification.summary =
-            `${verification.summary} OCR re-read the shipped pixels and found no PII text.`;
+      // 5. Real OCR pass scoped to the redacted regions ONLY. The regions are
+      //    composited into one strip (crop layout is pure, in reocr-verification)
+      //    and OCR re-reads that strip. Scanning the whole shipped image would
+      //    flag PII that is legitimately visible elsewhere on the page (an email
+      //    in an inbox row), so leaks are only meaningful inside regions the
+      //    pipeline claimed to redact. Any failure here keeps the pixel result
+      //    — OCR must never discard or downgrade the pixel verification.
+      try {
+        const layout = layoutRegionCrops(redactionRegions);
+        if (layout.slots.length > 0) {
+          const ocrCanvas = new OffscreenCanvas(layout.width, layout.height);
+          const ocrCtx = ocrCanvas.getContext("2d")!;
+          ocrCtx.fillStyle = "#ffffff";
+          ocrCtx.fillRect(0, 0, layout.width, layout.height);
+          const regionBitmap = await createImageBitmap(redactedBlob);
+          for (const slot of layout.slots) {
+            ocrCtx.drawImage(
+              regionBitmap,
+              slot.sx, slot.sy, slot.sw, slot.sh,
+              slot.dx, slot.dy, slot.dw, slot.dh,
+            );
+          }
+          regionBitmap.close();
+
+          const ocrText = await ocrDataUrl(await blobToDataUrl(await ocrCanvas.convertToBlob({ type: "image/jpeg", quality: 0.9 })));
+          if (ocrText) {
+            const ocrLeaks = detectPIIInText(ocrText);
+            verification = {
+              ...verification,
+              ocrRan: true,
+              leakedText: ocrLeaks.length > 0 ? ocrText.slice(0, 300) : undefined,
+            };
+            if (ocrLeaks.length > 0) {
+              verification.verified = false;
+              verification.leakedPatterns = [
+                ...verification.leakedPatterns,
+                ...ocrLeaks.map((l) => `OCR: ${l} still readable inside a redacted region`),
+              ];
+              verification.confidence = Math.min(verification.confidence, 0.3);
+              verification.summary =
+                `WARNING: OCR found ${ocrLeaks.join(", ")} still readable inside a redacted region. ` +
+                `Pixel regions: ${verification.regionsRedacted}/${verification.regionsChecked} confirmed.`;
+            } else {
+              verification.summary =
+                `${verification.summary} OCR re-read the redacted regions and found no readable PII.`;
+            }
+          }
         }
+      } catch {
+        // OCR is corroboration only — the pixel result above stands.
       }
       console.log(`[VLESS Offscreen] Re-OCR verification: ${verification.summary}`);
     } catch (error) {
@@ -465,6 +484,16 @@ async function processScreenshot(
     processingTimeMs: performance.now() - startTime,
     verification,
   };
+}
+
+/** Blob → data URL (used for the shipped JPEG and the OCR crop strip). */
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error("Blob read failed"));
+    reader.readAsDataURL(blob);
+  });
 }
 
 // ─── Message Handler ────────────────────────────────────────────────────────

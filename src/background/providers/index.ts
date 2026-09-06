@@ -1,4 +1,5 @@
 import type { Settings } from "../../shared/types";
+import { DEFAULT_SETTINGS } from "../../shared/types";
 import { createAnthropicPlanner } from "./anthropic";
 import { createOpenAIPlanner } from "./openai";
 import { createOllamaPlanner } from "./ollama";
@@ -7,11 +8,18 @@ import { createNvidiaPlanner } from "./nvidia";
 import type { Planner } from "./types";
 import { PlannerError } from "./types";
 
-/** Builds the planner for whichever provider the user has selected. */
+/**
+ * Builds the planner for whichever provider the user has selected.
+ *
+ * A stored blank/whitespace model (e.g. saved from a cleared options field)
+ * falls back to the provider's default rather than aborting the run mid-task
+ * with "No model chosen" — the options page always has a usable default.
+ */
 export function createPlanner(settings: Settings): Planner {
   const provider = settings.provider;
   const apiKey = settings.apiKeys[provider] ?? "";
-  const model = settings.models[provider] ?? "";
+  const model =
+    (settings.models[provider] ?? "").trim() || DEFAULT_SETTINGS.models[provider] || "";
 
   if (!model) {
     throw new PlannerError(`No model chosen for ${provider}. Pick one in the extension options.`);

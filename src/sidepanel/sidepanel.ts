@@ -1,4 +1,5 @@
 import type { AgentEvent, PanelCommand, TranscriptEntry } from "../shared/types";
+import { accuracyMetrics } from "../shared/metrics";
 
 // ─── DOM References ────────────────────────────────────────────────────────
 
@@ -188,9 +189,7 @@ function renderPrivacyAudit(audit: {
     }
   } else {
     screenshotsEl.innerHTML = "";
-  }
-
-  // Detection chips.
+  }    // Detection chips.
   const detectionsEl = $("audit-detections");
   if (audit.allDetections.length > 0) {
     const unique = new Map<string, { kind: string; label: string; count: number }>();
@@ -199,12 +198,22 @@ function renderPrivacyAudit(audit: {
       if (existing) existing.count++;
       else unique.set(d.label, { kind: d.kind, label: d.label, count: 1 });
     }
-    detectionsEl.innerHTML = `<h4>Detected PII</h4><div class="detection-list"></div>`;
+    detectionsEl.innerHTML = `<h4>Detected PII <span class="detection-hint">— flagged anything wrong? Tell the agent and it learns not to repeat it.</span></h4><div class="detection-list"></div>`;
     const list = detectionsEl.querySelector(".detection-list")!;
     for (const [, det] of unique) {
       const chip = document.createElement("span");
       chip.className = `detection-chip ${det.kind}`;
       chip.textContent = `${KIND_EMOJI[det.kind] ?? "•"} ${det.label}${det.count > 1 ? ` ×${det.count}` : ""}`;
+      // User ground truth: report a detection that was actually wrong. The
+      // service worker flips the outcome on the latest run and reflects a rule.
+      const fpBtn = document.createElement("button");
+      fpBtn.type = "button";
+      fpBtn.className = "fp-btn";
+      fpBtn.textContent = "✕ not PII";
+      fpBtn.dataset.kind = det.kind;
+      fpBtn.dataset.label = det.label;
+      fpBtn.addEventListener("click", () => void reportFalsePositive(fpBtn));
+      chip.appendChild(fpBtn);
       list.appendChild(chip);
     }
   } else {
@@ -302,6 +311,7 @@ function renderLearningDashboard(stats: {
   sitesVisited: number;
   rulesLearned: number;
   improvementDelta: number;
+  corrections?: number;
   rulesSummary: {
     total: number;
     byCategory: Record<string, number>;
@@ -320,10 +330,18 @@ function renderLearningDashboard(stats: {
 }): void {
   learningDashboardEl.classList.remove("hidden");
 
-  // Stats grid.
+  // Stats grid — precision/recall derived from measured outcomes, never asserted.
   const statsEl = $("learning-stats");
   const deltaClass = stats.improvementDelta > 0 ? "positive" : stats.improvementDelta < 0 ? "negative" : "";
   const deltaSign = stats.improvementDelta > 0 ? "+" : "";
+  const { precision, recall } = accuracyMetrics(
+    stats.piiRedacted,
+    stats.falsePositives,
+    stats.missedPII,
+  );
+  const metricClass = (v: number | null): string =>
+    v === null ? "" : v >= 0.85 ? "positive" : v < 0.6 ? "negative" : "";
+  const fmt = (v: number | null): string => (v === null ? "—" : `${Math.round(v * 100)}%`);
 
   statsEl.innerHTML = `
     <div class="learning-stat">
@@ -337,6 +355,14 @@ function renderLearningDashboard(stats: {
     <div class="learning-stat">
       <span class="number ${deltaClass}">${deltaSign}${Math.round(stats.improvementDelta * 100)}%</span>
       <span class="label">IMPROVEMENT</span>
+    </div>
+    <div class="learning-stat">
+      <span class="number ${metricClass(precision)}">${fmt(precision)}</span>
+      <span class="label">PRECISION</span>
+    </div>
+    <div class="learning-stat">
+      <span class="number ${metricClass(recall)}">${fmt(recall)}</span>
+      <span class="label">RECALL</span>
     </div>
     <div class="learning-stat">
       <span class="number">${stats.piiDetected}</span>
@@ -404,6 +430,15 @@ function renderLearningDashboard(stats: {
     }
   } else {
     rulesEl.innerHTML = `<h4>Learned Rules</h4><p class="empty-sub">No rules learned yet. Complete tasks to start improving.</p>`;
+  }
+
+  // User corrections — measured ground truth that feeds precision/recall.
+  const note = document.createElement("p");
+  note.className = "empty-sub";
+  note.style.cssText = "margin:6px 0 0;";
+  if ((stats.corrections ?? 0) > 0) {
+    note.textContent = `${stats.corrections} user-flagged false positive(s) corrected across runs — each one taught a rule.`;
+    rulesEl.appendChild(note);
   }
 
   // Measured false positives — checksum rejects + rule suppressions that
@@ -498,35 +533,62 @@ $("audit-close").addEventListener("click", () => {
 
 // ─── Learning Dashboard ────────────────────────────────────────────────────
 
+async function refreshLearningDashboard(): Promise<void> {
+  // Fetch current learning stats and map raw MemoryStats fields to dashboard format.
+  const response = (await send({ kind: "get-learning-stats" })) as any;
+  if (response && response.stats) {
+    const s = response.stats;
+    renderLearningDashboard({
+      totalRuns: s.totalRuns ?? 0,
+      successRate: Math.round((s.averageSuccessRate ?? 0) * 100),
+      piiDetected: s.totalPIIDetected ?? 0,
+      piiRedacted: s.totalPIIRedacted ?? 0,
+      falsePositives: s.totalFalsePositives ?? 0,
+      missedPII: s.totalMissedPII ?? 0,
+      sitesVisited: s.sitesVisited ?? 0,
+      rulesLearned: s.rulesLearned ?? 0,
+      improvementDelta: s.improvementDelta ?? 0,
+      corrections: s.totalUserCorrections ?? 0,
+      rulesSummary: response.rulesSummary ?? { total: 0, byCategory: {}, highConfidence: 0, recentlyCreated: 0 },
+      lastReflection: "",
+    });
+  } else {
+    renderLearningDashboard({
+      totalRuns: 0, successRate: 0, piiDetected: 0, piiRedacted: 0,
+      falsePositives: 0, missedPII: 0, sitesVisited: 0, rulesLearned: 0,
+      improvementDelta: 0, corrections: 0,
+      rulesSummary: { total: 0, byCategory: {}, highConfidence: 0, recentlyCreated: 0 },
+      lastReflection: "",
+    });
+  }
+}
+
+/** "✕ not PII" chip action — user ground truth feeding the learning loop. */
+async function reportFalsePositive(btn: HTMLButtonElement): Promise<void> {
+  btn.disabled = true;
+  btn.textContent = "…";
+  const response = (await send({
+    kind: "record-correction",
+    piiKind: btn.dataset.kind ?? "",
+    label: btn.dataset.label ?? "",
+    correction: "false_positive",
+  })) as { ok?: boolean } | undefined;
+  if (response?.ok) {
+    btn.textContent = "✓ counted";
+  } else {
+    btn.textContent = "✕ not PII";
+    btn.disabled = false;
+  }
+  // Keep the learning view live when it is open.
+  if (!learningDashboardEl.classList.contains("hidden")) {
+    await refreshLearningDashboard();
+  }
+}
+
 $("btn-learning").addEventListener("click", async () => {
   learningDashboardEl.classList.toggle("hidden");
   if (!learningDashboardEl.classList.contains("hidden")) {
-    // Fetch current learning stats and map raw MemoryStats fields to dashboard format.
-    const response = (await send({ kind: "get-learning-stats" })) as any;
-    if (response && response.stats) {
-      const s = response.stats;
-      renderLearningDashboard({
-        totalRuns: s.totalRuns ?? 0,
-        successRate: Math.round((s.averageSuccessRate ?? 0) * 100),
-        piiDetected: s.totalPIIDetected ?? 0,
-        piiRedacted: s.totalPIIRedacted ?? 0,
-        falsePositives: s.totalFalsePositives ?? 0,
-        missedPII: s.totalMissedPII ?? 0,
-        sitesVisited: s.sitesVisited ?? 0,
-        rulesLearned: s.rulesLearned ?? 0,
-        improvementDelta: s.improvementDelta ?? 0,
-        rulesSummary: response.rulesSummary ?? { total: 0, byCategory: {}, highConfidence: 0, recentlyCreated: 0 },
-        lastReflection: "",
-      });
-    } else {
-      renderLearningDashboard({
-        totalRuns: 0, successRate: 0, piiDetected: 0, piiRedacted: 0,
-        falsePositives: 0, missedPII: 0, sitesVisited: 0, rulesLearned: 0,
-        improvementDelta: 0,
-        rulesSummary: { total: 0, byCategory: {}, highConfidence: 0, recentlyCreated: 0 },
-        lastReflection: "",
-      });
-    }
+    await refreshLearningDashboard();
   }
 });
 

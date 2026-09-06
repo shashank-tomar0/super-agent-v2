@@ -285,3 +285,95 @@ export function emptyVerification(timestamp: number = Date.now()): VerificationR
     timestamp,
   };
 }
+
+// ─── Region-Crop Layout (OCR scoping) ───────────────────────────────────────
+
+/** One source region placed into the OCR composite canvas. */
+export interface RegionCropSlot {
+  /** Index into the source regions array. */
+  regionIndex: number;
+  /** Source rectangle in the full screenshot (device pixels). */
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+  /** Destination rectangle inside the composite strip. */
+  dx: number;
+  dy: number;
+  dw: number;
+  dh: number;
+}
+
+export interface RegionCropLayout {
+  slots: RegionCropSlot[];
+  /** Composite canvas size the caller should create. */
+  width: number;
+  height: number;
+}
+
+/**
+ * Lay out the redacted regions as one composite strip for a single OCR pass.
+ *
+ * The OCR leak scan MUST be scoped to exactly the regions the pipeline
+ * redacted: scanning the whole shipped image would flag PII that legitimately
+ * remains visible on the page (an email in an inbox, a phone number in body
+ * text) and turn every honest run into a false WARNING. Crops are scaled to a
+ * readable height, wrapped into rows, and capped so the pass stays one cheap
+ * OCR call. Pure and DOM-free so the headless harness can pin the geometry.
+ */
+export function layoutRegionCrops(
+  regions: RedactionRegion[],
+  opts: {
+    maxCrops?: number;
+    maxWidth?: number;
+    maxHeight?: number;
+    maxCropHeight?: number;
+  } = {},
+): RegionCropLayout {
+  const maxCrops = opts.maxCrops ?? 24;
+  const maxWidth = opts.maxWidth ?? 4096;
+  const maxHeight = opts.maxHeight ?? 2048;
+  const maxCropHeight = opts.maxCropHeight ?? 128;
+  const GUTTER = 4;
+  const ROW_GAP = 8;
+
+  const slots: RegionCropSlot[] = [];
+  let x = 0;
+  let y = 0;
+  let rowHeight = 0;
+
+  for (let i = 0; i < regions.length && slots.length < maxCrops; i++) {
+    const r = regions[i];
+    if (!(r.width > 0) || !(r.height > 0)) continue;
+
+    const sx = Math.round(r.x);
+    const sy = Math.round(r.y);
+    const sw = Math.max(1, Math.round(r.width));
+    const sh = Math.max(1, Math.round(r.height));
+    // Scale very tall regions down so OCR sees a compact, readable glyph strip.
+    const scale = Math.min(1, maxCropHeight / sh);
+    const dw = Math.max(1, Math.round(sw * scale));
+    const dh = Math.max(1, Math.round(sh * scale));
+
+    if (x + dw > maxWidth) {
+      // Wrap to a new row.
+      x = 0;
+      y += rowHeight + ROW_GAP;
+      rowHeight = 0;
+    }
+    if (y + dh > maxHeight) break;
+
+    slots.push({ regionIndex: i, sx, sy, sw, sh, dx: x, dy: y, dw, dh });
+    x += dw + GUTTER;
+    rowHeight = Math.max(rowHeight, dh);
+  }
+
+  let width = 0;
+  let height = 0;
+  for (const slot of slots) {
+    width = Math.max(width, slot.dx + slot.dw);
+    height = Math.max(height, slot.dy + slot.dh);
+  }
+
+  return { slots, width, height };
+}

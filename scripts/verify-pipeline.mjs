@@ -510,4 +510,134 @@ const migratedVision = normaliseSettings({ server: { enabled: true, url: "http:/
 ok("legacy dead server.enabled migrates to vision.enabled",
   migratedVision.vision.enabled === true && !("server" in migratedVision));
 
+// ─── Scenario I: region-crop layout keeps OCR scoped to redacted regions ───
+console.log("\n=== Scenario I: region-crop OCR layout ===\n");
+
+const { layoutRegionCrops } = await import("../src/background/reocr-verification.ts");
+const regions3 = [
+  { x: 0, y: 0, width: 200, height: 100, kind: "credential", label: "A" },
+  { x: 0, y: 0, width: 300, height: 40, kind: "credential", label: "B" },
+  { x: 0, y: 0, width: 80, height: 20, kind: "face", label: "C" },
+];
+const lay3 = layoutRegionCrops(regions3);
+ok("every region gets a slot when under caps", lay3.slots.length === 3, `got ${lay3.slots.length}`);
+ok("slots keep source coordinates + scale to max 128px tall",
+  lay3.slots.every((s) => s.dh <= 128 && s.sx === 0 && s.sy === 0),
+  JSON.stringify(lay3.slots));
+ok("unscaled short region keeps its native size",
+  lay3.slots[0].dh === 100 && lay3.slots[2].dh === 20,
+  JSON.stringify(lay3.slots.map((s) => [s.dw, s.dh])));
+ok("slots lay out left-to-right with gutters",
+  lay3.slots[1].dx === lay3.slots[0].dx + lay3.slots[0].dw + 4,
+  JSON.stringify(lay3.slots.map((s) => s.dx)));
+ok("composite size covers the last slot",
+  lay3.width === lay3.slots[2].dx + lay3.slots[2].dw && lay3.height > 0,
+  `${lay3.width}x${lay3.height}`);
+
+const manyRegions = Array.from({ length: 40 }, () => ({ x: 0, y: 0, width: 100, height: 50, kind: "credential", label: "x" }));
+ok("crop count capped", layoutRegionCrops(manyRegions).slots.length <= 24);
+ok("explicit maxCrops honoured", layoutRegionCrops(manyRegions, { maxCrops: 8 }).slots.length === 8);
+
+const wrap = layoutRegionCrops(regions3, { maxWidth: 150, maxCropHeight: 200 });
+ok("wide layouts wrap into a second row",
+  wrap.slots.length === 3 && wrap.slots[1].dy > wrap.slots[0].dy,
+  JSON.stringify(wrap.slots.map((s) => [s.dx, s.dy])));
+ok("wrapped slot restarts at x=0", wrap.slots[1].dx === 0, `dx=${wrap.slots[1].dx}`);
+
+ok("zero-sized regions are skipped",
+  layoutRegionCrops([{ x: 0, y: 0, width: 0, height: 0, kind: "credential", label: "z" }]).slots.length === 0);
+
+// ─── Scenario J: accuracy metrics (measured, not asserted) ─────────────────
+console.log("\n=== Scenario J: precision/recall math ===\n");
+
+const { accuracyMetrics } = await import("../src/shared/metrics.ts");
+ok("precision = TP/(TP+FP)", accuracyMetrics(8, 2, 1).precision === 0.8);
+ok("recall = TP/(TP+FN)", Math.abs((accuracyMetrics(8, 2, 1).recall ?? 0) - 8 / 9) < 1e-9);
+ok("perfect detection scores 1/1",
+  accuracyMetrics(5, 0, 0).precision === 1 && accuracyMetrics(5, 0, 0).recall === 1);
+ok("no signal yields null metrics",
+  accuracyMetrics(0, 0, 0).precision === null && accuracyMetrics(0, 0, 0).recall === null);
+
+// ─── Scenario K: user correction closes the loop (Phase 3) ─────────────────
+console.log("\n=== Scenario K: user corrections → measured FP → learned rule ===\n");
+await clearExperienceMemory();
+
+const { recordUserCorrection } = await import("../src/background/experience-memory.ts");
+const expK = {
+  id: "exp-correction",
+  timestamp: Date.now(),
+  task: "scan for PII",
+  domain: "correction.example.com",
+  pageType: "form",
+  piiDetections: [
+    { kind: "id_number", method: "regex", outcome: "true_positive", confidence: 0.7 },
+    { kind: "credential", method: "contextual", outcome: "true_positive", confidence: 0.9 },
+  ],
+  actions: [],
+  taskSuccess: true,
+  durationMs: 100,
+  piiRedacted: 2,
+  estimatedTokens: 0,
+  rulesGenerated: [],
+  userCorrections: [],
+};
+await recordExperience(expK);
+
+const corrected = await recordUserCorrection({
+  kind: "id_number",
+  label: "ID number (text)",
+  correction: "false_positive",
+});
+ok("correction targets the most recent run", corrected?.id === "exp-correction");
+ok("matching true positive flipped to false positive",
+  corrected?.piiDetections.some((p) => p.kind === "id_number" && p.outcome === "false_positive"),
+  JSON.stringify(corrected?.piiDetections));
+ok("credential detection untouched by id_number correction",
+  corrected?.piiDetections.some((p) => p.kind === "credential" && p.outcome === "true_positive"));
+ok("correction appended to experience", corrected?.userCorrections.length === 1,
+  JSON.stringify(corrected?.userCorrections));
+
+// Reflecting over the corrected view must produce a real FP rule for regex ids.
+const reflectionK = reflectOnRun(corrected, []);
+ok("reflection over corrected run generates a false-positive rule",
+  reflectionK.newRules.some(
+    (r) => r.category === "pii_detection" && r.pattern.condition === "false_positive:id_number:regex",
+  ),
+  JSON.stringify(reflectionK.newRules.map((r) => r.pattern.condition)));
+
+const statsK = await getMemoryStats();
+ok("corrected FP counted in stats", statsK.totalFalsePositives === 1, `got ${statsK.totalFalsePositives}`);
+ok("user corrections counted in stats", statsK.totalUserCorrections === 1, `got ${statsK.totalUserCorrections}`);
+
+// ─── Scenario L: model interruptions are hardened ──────────────────────────
+console.log("\n=== Scenario L: blank-model fallback + friendly model errors ===\n");
+
+const { modelUnavailableReason } = await import("../src/background/providers/errors.ts");
+const { createPlanner } = await import("../src/background/providers/index.ts");
+
+ok("410 (NVIDIA EOL) recognised as model-unavailable",
+  modelUnavailableReason(410, "{\"detail\":\"end of life\"}") !== null);
+ok("404 recognised as model-unavailable", modelUnavailableReason(404, "model not found") !== null);
+ok("400 with model-not-found text recognised",
+  modelUnavailableReason(400, "model does not exist") !== null);
+ok("rate limits are NOT model errors", modelUnavailableReason(429, "rate limit exceeded") === null);
+ok("server errors are NOT model errors", modelUnavailableReason(500, "boom") === null);
+
+// A blank stored model falls back to the provider default instead of throwing
+// "No model chosen" mid-run (createPlanner constructs a client only).
+const groqFallback = createPlanner({
+  provider: "groq",
+  apiKeys: { groq: "gsk_test" },
+  models: { groq: "   " },
+});
+ok("blank groq model falls back to its default",
+  /Groq openai\/gpt-oss-20b/.test(groqFallback.label), `label=${groqFallback.label}`);
+const ollamaFallback = createPlanner({
+  provider: "ollama",
+  apiKeys: { ollama: "" },
+  models: { ollama: "" },
+});
+ok("blank ollama model falls back to its default (no key needed)",
+  ollamaFallback.label.includes("qwen2.5:1.5b"), `label=${ollamaFallback.label}`);
+
 console.log(`\n${passed} assertions passed. Pipeline verified end-to-end.`);

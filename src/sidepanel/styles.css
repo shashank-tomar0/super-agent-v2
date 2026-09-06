@@ -752,11 +752,19 @@ body::after {
 }
 
 .audit-detections { padding: 0 16px 8px; }
+.detection-hint {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 500;
+  color: var(--color-ink-mute);
+  text-transform: none;
+  letter-spacing: 0;
+}
 .detection-list { display: flex; flex-wrap: wrap; gap: 4px; }
 .detection-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   padding: 3px 8px;
   font-family: var(--font-mono);
   font-size: 9px;
@@ -769,6 +777,22 @@ body::after {
 .detection-chip.credential { border-color: var(--color-teal); color: var(--color-teal); }
 .detection-chip.id_number { border-color: #8e44ad; color: #8e44ad; }
 .detection-chip.api_key { border-color: #e67e22; color: #e67e22; }
+
+.fp-btn {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.fp-btn:hover { background: var(--color-ink); color: var(--color-paper); }
+.fp-btn:disabled { opacity: 0.55; cursor: default; }
 
 .audit-tokens { padding: 0 16px 16px; }
 .token-list { display: flex; flex-wrap: wrap; gap: 4px; }
