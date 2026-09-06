@@ -158,6 +158,7 @@ export async function runTask(
   const trackedPII: PIIExperience[] = [];
   let taskSuccess = false;
   let estimatedTokens = 0;
+  let errorCount = 0;
 
   let controller = new TabController(startTabId);
   const tab = await chrome.tabs.get(startTabId);
@@ -408,6 +409,7 @@ export async function runTask(
       });
     } catch (error) {
       if (signal.aborted) return;
+      errorCount++;
       emit({
         kind: "entry",
         entry: {
@@ -422,6 +424,7 @@ export async function runTask(
     messages.push({ role: "assistant", text: turn.text, toolCalls: turn.toolCalls });
 
     if (turn.stopReason === "refusal") {
+      errorCount++;
       emit({
         kind: "entry",
         entry: {
@@ -622,8 +625,9 @@ export async function runTask(
     messages.push({ role: "tool", results });
   }
 
-  // Mark task success: succeeded if we got here without errors and had at least one action or the task was simple.
-  taskSuccess = !transcriptHasErrors();
+  // Mark task success: succeeded if we had at least one successful action and no critical errors.
+  const hasSuccessfulActions = trackedActions.some((a) => a.success);
+  taskSuccess = !transcriptHasErrors() && (hasSuccessfulActions || trackedActions.length === 0);
 
   emit({
     kind: "entry",
@@ -658,9 +662,7 @@ export async function runTask(
   tokenizer.clear();
 
   function transcriptHasErrors(): boolean {
-    // Check if any error entries were emitted during this run.
-    // The emit function pushes to transcript in service-worker.ts.
-    return false; // Default to success; errors are tracked via emit calls.
+    return errorCount > 0;
   }
 }
 

@@ -368,6 +368,26 @@ export function getSensitiveRegions(): SensitiveRegion[] {
   ]);
   regions.push(...idRegions);
 
+  // 4. Detect profile/avatar images that likely contain faces.
+  const profileImages = document.querySelectorAll('img[src*="avatar"], img[src*="profile"], img[src*="photo"], img[alt*="profile"], img[alt*="avatar"], [role="img"][aria-label*="profile"], [role="img"][aria-label*="avatar"]');
+  for (const el of Array.from(profileImages)) {
+    if (!isVisible(el)) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 20 || rect.height < 20) continue;
+    // Only square-ish images (aspect ratio 0.5-2.0) are likely faces.
+    const aspect = rect.width / rect.height;
+    if (aspect < 0.5 || aspect > 2.0) continue;
+    processedElements.add(el);
+    regions.push({
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      kind: "face",
+      label: "Profile/avatar image",
+    });
+  }
+
   return regions;
 }
 
