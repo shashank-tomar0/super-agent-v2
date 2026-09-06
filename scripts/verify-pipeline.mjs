@@ -474,6 +474,35 @@ ok("learned strategy rule disables deterministic for the page type",
 ok("FP rule does NOT apply to a different domain",
   buildSuppressionKeys(await getApplicableRules("other.com", "email")).size === 0);
 
+// The reinforcement loop: when a run records that the rule FIRED (suppressed
+// a detection), reflection confirms it and confidence grows — rules must not
+// stay frozen at creation confidence.
+const firedExp = {
+  id: "exp-fired",
+  timestamp: Date.now(),
+  task: "scan page",
+  domain: "example.com",
+  pageType: "email",
+  piiDetections: [],
+  actions: [],
+  taskSuccess: true,
+  durationMs: 100,
+  piiRedacted: 0,
+  estimatedTokens: 0,
+  rulesFired: ["id_number:regex"],
+  rulesGenerated: [],
+  userCorrections: [],
+};
+const confirmRefl = reflectOnRun(firedExp, await getLearnedRules());
+ok("a rule that fired is confirmed by reflection",
+  confirmRefl.confirmedRules.includes("fp-test-1"),
+  JSON.stringify(confirmRefl.confirmedRules));
+await applyReflectionResults(confirmRefl);
+const afterConfirm = (await getLearnedRules()).find((r) => r.id === "fp-test-1");
+ok("confirmation raises rule confidence (0.6 → 0.7)",
+  afterConfirm?.confidence === 0.7 && afterConfirm?.confirmedCount === 1,
+  JSON.stringify({ confidence: afterConfirm?.confidence, confirmedCount: afterConfirm?.confirmedCount }));
+
 // Sanity: verhoeffValid accepts the generated number and rejects garbage.
 ok("verhoeffValid round-trips",
   verhoeffValid(aadhaarDigits) && !verhoeffValid(badAadhaarSeed) && luhnValid("4111111111111111"));

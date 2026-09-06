@@ -262,6 +262,8 @@ export async function runTask(
   const runStartTime = Date.now();
   const trackedActions: ActionExperience[] = [];
   const trackedPII: PIIExperience[] = [];
+  /** `kind:method` keys of learned rules that fired this run (confirmations). */
+  const firedRuleKeys = new Set<string>();
   let taskSuccess = false;
   let estimatedTokens = 0;
   let errorCount = 0;
@@ -436,7 +438,12 @@ export async function runTask(
 
     // False positives are measured, not hidden: rule-suppressed detections
     // and checksum-rejected lookalikes feed the FP signal back into memory.
-    for (const fp of suppressed) noteFalsePositive(fp.kind, fp.method, fp.confidence, fp.value);
+    // A learned rule that suppresses a detection is a CONFIRMATION event —
+    // the rule fired and (absent a user correction) did its job.
+    for (const fp of suppressed) {
+      firedRuleKeys.add(`${fp.kind}:${fp.method}`);
+      noteFalsePositive(fp.kind, fp.method, fp.confidence, fp.value);
+    }
     for (const rj of rejected) noteFalsePositive(rj.kind, rj.method, rj.confidence, rj.value);
     if (suppressed.length + rejected.length > 0) {
       emit({
@@ -634,6 +641,7 @@ export async function runTask(
       egressBytes: sessionEgressBytes,
       reocrVerified,
       reocrLeakedPII,
+      rulesFired: [...firedRuleKeys],
       rulesGenerated: [],
       userCorrections: [],
     };
@@ -1058,7 +1066,10 @@ ${freshRendered}`,
           }
 
           // Measured false positives from the fresh snapshot (rule + checksum).
-          for (const fp of freshSuppressed) noteFalsePositive(fp.kind, fp.method, fp.confidence, fp.value);
+          for (const fp of freshSuppressed) {
+            firedRuleKeys.add(`${fp.kind}:${fp.method}`);
+            noteFalsePositive(fp.kind, fp.method, fp.confidence, fp.value);
+          }
           for (const rj of freshRejected) noteFalsePositive(rj.kind, rj.method, rj.confidence, rj.value);
 
           warnIfInjected(fresh, emit);

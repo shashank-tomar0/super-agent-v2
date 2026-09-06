@@ -79,6 +79,10 @@ export interface RunExperience {
   reocrVerified?: boolean;
   /** Re-OCR results: PII found in redacted image. */
   reocrLeakedPII?: string[];
+  /** `kind:method` keys of learned rules that FIRED (suppressed a detection)
+   * during this run — reflection confirms the matching rules, so repeated
+   * use strengthens them (confidence grows, never stays inert). */
+  rulesFired?: string[];
   /** Learned rules generated from this run. */
   rulesGenerated: string[];
   /** User corrections (if any). */

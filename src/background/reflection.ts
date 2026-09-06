@@ -118,6 +118,21 @@ export function reflectOnRun(
     }
   }
 
+  // ── 1b. Confirm rules that actually FIRED this run ──────────────────────
+  //
+  // The agent records `rulesFired` (kind:method keys) for every learned-rule
+  // suppression during the run. A rule that suppressed a detection and was
+  // not corrected by the user is evidence the rule works — confirm it so
+  // confidence grows with use instead of staying frozen at creation.
+  for (const key of experience.rulesFired ?? []) {
+    const matchingRule = existingRules.find(
+      (r) => r.category === "pii_detection" && r.pattern.condition === `false_positive:${key}`,
+    );
+    if (matchingRule && !confirmedRules.includes(matchingRule.id)) {
+      confirmedRules.push(matchingRule.id);
+    }
+  }
+
   // ── 2. Analyze Strategy Effectiveness ───────────────────────────────────
 
   // If deterministic planner succeeded, note that for this page type.
