@@ -155,6 +155,12 @@ const INTERNATIONAL_ID_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
 ];
 
 const CARD_NUMBER_PATTERN = /\b(?:\d{4}[\s-]?){3}\d{4}\b/;
+const EMAIL_PATTERN = /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/;
+// Indian mobile: +91 XXXXX XXXXX or 10 digits starting 6-9.
+const PHONE_PATTERN = /\b(\+91[\s-]?)?[6-9]\d{9}\b/;
+// Generic phone-looking numbers used inside phone-labeled fields are handled
+// contextually — this free-text channel only flags unambiguous patterns.
+
 
 /**
  * Scans the DOM tree for PII in element names, values, labels, and attributes.
@@ -221,21 +227,28 @@ export function detectDOMPII(snapshot: {
 }
 
 /**
- * Scans free text for ID numbers (Aadhaar, PAN, SSN, etc.).
- * Used on page text and snapshot text before sending to server.
+ * Scans free text for ID numbers (Aadhaar, PAN, SSN, etc.), email addresses,
+ * and phone numbers. Used on page text and snapshot text before sending to server.
  */
 export function detectTextPII(text: string): DetectedPII[] {
-  const results: DetectedPII[] = [];    for (const { pattern, label } of [...INDIAN_ID_PATTERNS, ...INTERNATIONAL_ID_PATTERNS]) {
-    // matchAll requires the global flag — clone if missing.
-    const regex = pattern instanceof RegExp ? pattern : new RegExp(pattern as unknown as string, "gi");
-    const globalRegex = regex.global ? regex : new RegExp(regex.source, regex.flags + "g");
+  const results: DetectedPII[] = [];
+
+  const patterns: Array<{ pattern: RegExp; kind: DetectedPII["kind"]; label: string }> = [
+    ...INDIAN_ID_PATTERNS.map((p) => ({ pattern: p.pattern, kind: "id_number" as const, label: p.label })),
+    ...INTERNATIONAL_ID_PATTERNS.map((p) => ({ pattern: p.pattern, kind: "id_number" as const, label: p.label })),
+    { pattern: EMAIL_PATTERN, kind: "credential" as const, label: "Email address" },
+    { pattern: PHONE_PATTERN, kind: "credential" as const, label: "Phone number" },
+  ];
+
+  for (const { pattern, kind, label } of patterns) {
+    const globalRegex = pattern.global ? pattern : new RegExp(pattern.source, pattern.flags + "g");
     const matches = text.matchAll(globalRegex);
     for (const match of matches) {
       if (match.index !== undefined) {
         results.push({
-          kind: "id_number",
+          kind,
           value: match[0],
-          confidence: 0.7,
+          confidence: kind === "credential" ? 0.9 : 0.7,
           label,
         });
       }

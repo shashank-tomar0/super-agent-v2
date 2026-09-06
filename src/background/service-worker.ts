@@ -228,7 +228,7 @@ interface AuditEntry {
   original?: string;
   redacted?: string;
   detections: Array<{ kind: string; label: string; confidence: number }>;
-  tokens: Array<{ token: string; kind: string }>;
+  tokens: Array<{ token: string; kind: string; sample?: string }>;
   redactedCount: number;
   timestamp: number;
 }
@@ -242,7 +242,7 @@ function recordAuditEntry(data: {
   original?: string;
   redacted?: string;
   detections: Array<{ kind: string; label: string; confidence: number }>;
-  tokens: Array<{ token: string; kind: string }>;
+  tokens: Array<{ token: string; kind: string; sample?: string }>;
   redactedCount: number;
 }): void {
   // Limit stored entries to prevent memory bloat (each base64 screenshot ~1-5MB).
@@ -260,7 +260,7 @@ function recordAuditEntry(data: {
 
 function emitPrivacyAudit(): void {
   const allDetections: Array<{ kind: string; label: string; confidence: number }> = [];
-  const allTokens: Array<{ token: string; kind: string }> = [];
+  const allTokens: Array<{ token: string; kind: string; sample?: string }> = [];
   let totalRedacted = 0;
 
   for (const entry of auditEntries) {

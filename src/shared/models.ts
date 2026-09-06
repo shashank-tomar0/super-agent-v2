@@ -154,7 +154,7 @@ export async function listModels(
       .map((m) => m.id)
       .filter((id): id is string => Boolean(id))
       // Only include chat/text models, not embedding or safety models.
-      .filter((id) => /^(meta|deepseek|qwen|nvidia\/llama|mistralai|openai\/gpt)/.test(id))
+      .filter((id) => /^(meta|deepseek|qwen|nvidia\/(nemotron|llama|deepseek)|mistralai|openai\/gpt)/.test(id))
       .sort();
   }
 

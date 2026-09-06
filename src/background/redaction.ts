@@ -280,8 +280,15 @@ export function redactSnapshot(
       .filter((id) => id >= 0),
   );
 
+  const TOKEN_RE = /^<[A-Z]+_\d+>$/;
+
   const elements = snapshot.elements.map((el) => {
     if (credentialIds.has(el.id)) {
+      // If the value was already tokenized, keep the token — the LLM needs it
+      // to reference the value at action time. Only raw values become [REDACTED].
+      if (el.value && TOKEN_RE.test(el.value)) {
+        return el;
+      }
       redactedCount++;
       return {
         ...el,

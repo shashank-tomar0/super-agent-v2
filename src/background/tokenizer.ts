@@ -161,6 +161,102 @@ export class PIITokenizer {
   }
 
   /**
+   * Tokenize values that the detectors actually flagged.
+   *
+   * Detection and tokenization were previously disconnected: the detectors
+   * found names/emails/phones in fields and ID numbers in text, but the
+   * tokenizer only knew about password-role inputs and its own hardcoded ID
+   * patterns. As a result the vault stayed empty and the audit had no tokens
+   * to show even when PII was found.
+   *
+   * This closes that gap: every detection with a value gets that value
+   * replaced by a vault token (in its element and/or in the page text).
+   */
+  tokenizeDetections(
+    snapshot: {
+      elements: Array<{
+        id: number;
+        role: string;
+        name: string;
+        value?: string;
+        attrs?: Record<string, string>;
+      }>;
+      text: string;
+      url: string;
+      title: string;
+    },
+    detections: Array<{
+      kind: string;
+      value?: string;
+      elementSelector?: string;
+    }>,
+  ): {
+    elements: Array<{
+      id: number;
+      role: string;
+      name: string;
+      value?: string;
+      attrs?: Record<string, string>;
+    }>;
+    text: string;
+    url: string;
+    title: string;
+    tokenCount: number;
+  } {
+    const TOKEN_RE = /^<[A-Z]+_\d+>$/;
+    const elements = snapshot.elements.map((el) => ({ ...el }));
+    let text = snapshot.text;
+    let tokenCount = 0;
+    const elementsById = new Map(elements.map((el) => [el.id, el]));
+
+    for (const det of detections) {
+      if (!det.value || det.kind === "face") continue;
+      const val = det.value;
+      if (TOKEN_RE.test(val)) continue;
+
+      // Map any detector kind onto a token kind the vault understands.
+      const tokenKind = (det.kind === "pii_text" || det.kind === "person" || det.kind === "organization"
+        ? "pii_text"
+        : det.kind === "id_number" || det.kind === "api_key" || det.kind === "credential"
+          ? det.kind
+          : "credential") as DetectedPII["kind"];
+
+      const token = this.tokenize(val, tokenKind);
+      let replacedAny = false;
+
+      // 1) Element path: replace the value on the element the detector flagged.
+      const selMatch = det.elementSelector?.match(/data-vless-id="(\d+)"/);
+      if (selMatch) {
+        const el = elementsById.get(parseInt(selMatch[1], 10));
+        if (el && el.value && el.value.includes(val) && !TOKEN_RE.test(el.value)) {
+          el.value = el.value.split(val).join(token);
+          replacedAny = true;
+        }
+      }
+
+      // 2) Text path: replace remaining occurrences (guarded by length so we
+      //    never mangle tiny substrings like "No" inside ordinary sentences,
+      //    and word-bounded so "Singh" never corrupts "Singhania").
+      if (val.length >= 4 && text.includes(val)) {
+        const escaped = val.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const isAlpha = /^[A-Za-z ]+$/.test(val);
+        const bounded = isAlpha
+          ? new RegExp(`(^|[^A-Za-z])${escaped}(?=$|[^A-Za-z])`, "g")
+          : new RegExp(escaped, "g");
+        const next = text.replace(bounded, (match, lead) => `${lead ?? ""}${token}`);
+        if (next !== text) {
+          text = next;
+          replacedAny = true;
+        }
+      }
+
+      if (replacedAny) tokenCount++;
+    }
+
+    return { ...snapshot, elements, text, tokenCount };
+  }
+
+  /**
    * Tokenize PII found in the user's task description.
    * This ensures the LLM sees the same tokens in the task as on screen,
    * so it can match "Sharma Traders" in the task to <ORG_3> on screen.
@@ -231,12 +327,14 @@ export class PIITokenizer {
 
   /**
    * Get a summary of all tokenized values (for debugging/demo).
-   * Does NOT expose the original values — just the token→kind mapping.
+   * Does NOT expose the original values — just the token→kind mapping plus a
+   * masked sample ("r•••@gmail.com") so the UI can show what was tokenized.
    */
-  getTokenSummary(): Array<{ token: string; kind: string }> {
+  getTokenSummary(): Array<{ token: string; kind: string; sample?: string }> {
     return Array.from(this.vault.values()).map((entry) => ({
       token: entry.token,
       kind: entry.kind,
+      sample: maskSample(entry.original),
     }));
   }
 
@@ -261,3 +359,33 @@ export class PIITokenizer {
  * Lives for the duration of one task run, then gets cleared.
  */
 export const tokenizer = new PIITokenizer();
+
+/**
+ * Produces a display-safe sample of a tokenized value so the audit UI can show
+ * WHAT was tokenized without ever exposing the raw value.
+ *
+ *   "rahul@gmail.com"    → "ra•••@gmail.com"
+ *   "9876543210"         → "98••••3210"
+ *   "Sharma Traders Pvt" → "Sh••••••••••••"
+ */
+export function maskSample(value: string): string {
+  const v = String(value);
+  if (v.length <= 2) return "••";
+
+  // Emails keep their domain visible so the kind is obvious.
+  const at = v.indexOf("@");
+  if (at > 0 && v.includes(".")) {
+    const local = v.slice(0, at);
+    const domain = v.slice(at);
+    return `${local.slice(0, 2)}•••${domain}`;
+  }
+
+  // Digits: keep first 2 and last 4.
+  if (/\d/.test(v) && v.replace(/\D/g, "").length >= 8) {
+    const first2 = v.slice(0, 2);
+    const last4 = v.slice(-4);
+    return `${first2}••••${last4}`;
+  }
+
+  return `${v.slice(0, 2)}••••••••`;
+}

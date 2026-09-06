@@ -35,6 +35,7 @@ import {
   initLedger, recordSnapshot, recordDetections,
   recordAction as ledgerRecordAction,
   recordTokenization as ledgerRecordTokenization,
+  recordRedaction as ledgerRecordRedaction,
 } from "./privacy-ledger";
 
 let counter = 0;
@@ -89,10 +90,12 @@ function sanitizeSnapshot(snapshot: PageSnapshot): {
   const seenElementIds = new Set(regexDetections.filter((d) => d.elementSelector).map((d) => d.elementSelector));
   const allDetections = [...regexDetections, ...contextualPII.filter((d) => !d.elementSelector || !seenElementIds.has(d.elementSelector))];
 
-  // 2. Tokenize sensitive values in the snapshot.
-  const tokenized = tokenizer.tokenizeSnapshot(snapshot);
+  // 2. Tokenize the values the detectors actually flagged (names, emails,
+  //    phones, ID numbers) so they become vault tokens the LLM can reference
+  //    instead of raw values.
+  const tokenized = tokenizer.tokenizeDetections(snapshot, allDetections);
 
-  // 3. Redact sensitive values (replace with [REDACTED]).
+  // 3. Redact whatever could not be tokenized (replace with [REDACTED]).
   const { elements, text, redactedCount } = redactSnapshot(
     {
       elements: tokenized.elements,
@@ -107,7 +110,7 @@ function sanitizeSnapshot(snapshot: PageSnapshot): {
       elements,
       text,
     },
-    piiCount: redactedCount + tokenized.tokenCount,
+    piiCount: tokenized.tokenCount + redactedCount,
     detections: [
       ...regexDetections.map((d) => ({ kind: d.kind, method: "regex", confidence: d.confidence })),
       ...contextualDetections.map((d) => ({ kind: d.kind, method: "contextual", confidence: d.confidence })),
@@ -133,7 +136,7 @@ export interface AgentDeps {
     original?: string;
     redacted?: string;
     detections: Array<{ kind: string; label: string; confidence: number }>;
-    tokens: Array<{ token: string; kind: string }>;
+    tokens: Array<{ token: string; kind: string; sample?: string }>;
     redactedCount: number;
   }) => void;
 }
@@ -226,6 +229,9 @@ export async function runTask(
     if (tokenSummary.length > 0) {
       ledgerRecordTokenization(tokenSummary).catch(() => {});
     }
+    if (piiCount > 0) {
+      ledgerRecordRedaction(piiCount, "dom").catch(() => {});
+    }
 
     piiTotal += piiCount;
 
@@ -264,6 +270,16 @@ export async function runTask(
             text: `Screenshot captured: ${screenshotResult.processed.redactedCount} PII items redacted in ${screenshotResult.processed.processingTimeMs.toFixed(0)}ms.`,
           },
         });
+        // Track visual detections in experience memory too (faces, avatars).
+        for (const det of screenshotResult.processed.detections) {
+          trackedPII.push({
+            kind: det.kind,
+            method: "visual",
+            outcome: "true_positive",
+            confidence: det.confidence,
+          });
+        }
+        piiTotal += screenshotResult.processed.redactedCount;
         // Record for privacy audit.
         recordAudit?.({
           original: screenshotResult.original,
@@ -690,6 +706,19 @@ ${freshRendered}`,
               if (screenshotResult) {
                 observation +=
                   `\n\n[Screenshot: ${screenshotResult.processed.redactedCount} PII redacted]`;
+                // Track visual detections in experience memory too (faces, avatars).
+                for (const det of screenshotResult.processed.detections) {
+                  trackedPII.push({
+                    kind: det.kind,
+                    method: "visual",
+                    outcome: "true_positive",
+                    confidence: det.confidence,
+                  });
+                }
+                if (screenshotResult.processed.redactedCount > 0) {
+                  ledgerRecordRedaction(screenshotResult.processed.redactedCount, "visual").catch(() => {});
+                }
+                piiTotal += screenshotResult.processed.redactedCount;
                 // Record for privacy audit.
                 recordAudit?.({
                   original: screenshotResult.original,

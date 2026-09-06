@@ -111,7 +111,7 @@ export interface PrivacyAuditSnapshot {
     box?: { x: number; y: number; width: number; height: number };
   }>;
   /** Token replacements made (e.g., <CRED_1> replaced "password123"). */
-  tokens: Array<{ token: string; kind: string }>;
+  tokens: Array<{ token: string; kind: string; sample?: string }>;
   /** Total PII items redacted in this snapshot. */
   redactedCount: number;
   /** Timestamp. */
@@ -141,7 +141,7 @@ export type AgentEvent =
           label: string;
           confidence: number;
         }>;
-        allTokens: Array<{ token: string; kind: string }>;
+        allTokens: Array<{ token: string; kind: string; sample?: string }>;
         totalRedacted: number;
         totalScreenshots: number;      totalPIIDetections: number;
       durationMs: number;

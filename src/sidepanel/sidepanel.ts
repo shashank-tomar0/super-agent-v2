@@ -119,6 +119,7 @@ function renderPrivacyAudit(audit: {
 
   // Summary stats.
   const summaryEl = $("audit-summary");
+  const uniqueTokenCount = new Set(audit.allTokens.map((t) => t.token)).size;
   summaryEl.innerHTML = `
     <div class="audit-stat">
       <span class="number">${audit.totalPIIDetections}</span>
@@ -129,7 +130,7 @@ function renderPrivacyAudit(audit: {
       <span class="label">Items Redacted</span>
     </div>
     <div class="audit-stat">
-      <span class="number">${audit.allTokens.length}</span>
+      <span class="number">${uniqueTokenCount}</span>
       <span class="label">Tokens Created</span>
     </div>
   `;
@@ -185,17 +186,25 @@ function renderPrivacyAudit(audit: {
   // Token vault.
   const tokensEl = $("audit-tokens");
   if (audit.allTokens.length > 0) {
-    tokensEl.innerHTML = `<h4>Token Vault (values hidden)</h4><div class="token-list"></div>`;
-    const list = tokensEl.querySelector(".token-list")!;
+    // Dedupe tokens (they can repeat across screenshot entries).
+    const seen = new Map<string, { token: string; kind: string; sample?: string }>();
     for (const tok of audit.allTokens) {
+      if (!seen.has(tok.token)) seen.set(tok.token, tok);
+    }
+    tokensEl.innerHTML = `<h4>Token Vault (values never leave the browser)</h4><div class="token-list"></div>`;
+    const list = tokensEl.querySelector(".token-list")!;
+    for (const tok of seen.values()) {
       const chip = document.createElement("span");
       chip.className = "token-chip";
-      chip.textContent = tok.token;
-      chip.title = "Original value is never stored";
+      const kind = tok.kind === "pii_text" ? "PII text" : tok.kind === "id_number" ? "ID number" : tok.kind === "api_key" ? "API key" : tok.kind;
+      chip.textContent = tok.sample
+        ? `${tok.token} → ${tok.sample} (${kind})`
+        : `${tok.token} (${kind})`;
+      chip.title = "Raw value replaced by this token — never stored or sent";
       list.appendChild(chip);
     }
   } else {
-    tokensEl.innerHTML = "";
+    tokensEl.innerHTML = `<h4>Token Vault</h4><p class="empty-sub">No values needed tokenizing on this page.</p>`;
   }
 
   privacyAuditEl.scrollIntoView({ behavior: "smooth" });
