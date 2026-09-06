@@ -746,14 +746,13 @@ export async function runTask(
       },
     });
 
-    let turn;
-    try {
-      // Bound every planner turn: a stalled provider (slow first token, a
-      // dropped stream, a hung connection) must become an actionable error,
-      // not an infinite RUNNING state. The turn-local abort cancels the
-      // underlying request on timeout; the user's Stop still wins first.
-      const turnAbort = new AbortController();
-      turn = await withTurnTimeout(
+    // One turn = one bounded planner call. Stalls (slow first token, dropped
+    // stream, hung connection, rate limit) abort after TURN_TIMEOUT_MS and are
+    // retried ONCE automatically — transient provider hiccups must not kill a
+    // demo run. The turn-local abort cancels the request; the user's Stop wins.
+    const plannerTimeoutMessage = `The planner (${planner.label}) did not respond within ${Math.round(TURN_TIMEOUT_MS / 1000)}s. The provider may be overloaded or the network stalled.`;
+    const runPlannerTurn = async (turnAbort: AbortController) =>
+      withTurnTimeout(
         planner.run({
           system: systemPrompt,
           messages,
@@ -762,22 +761,52 @@ export async function runTask(
           onText,
         }),
         TURN_TIMEOUT_MS,
-        `The planner (${planner.label}) did not respond within ${Math.round(TURN_TIMEOUT_MS / 1000)}s. The provider may be overloaded or the network stalled — press Stop and retry, or switch provider/model in the options.`,
+        plannerTimeoutMessage,
         () => turnAbort.abort(),
       );
-    } catch (error) {
+
+    let turn;
+    try {
+      turn = await runPlannerTurn(new AbortController());
+    } catch (firstError) {
       if (signal.aborted) { finishTask(); return; }
-      errorCount++;
+      const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
+      if (!isRetryablePlannerError(firstMessage)) {
+        errorCount++;
+        emit({
+          kind: "entry",
+          entry: { id: nextId(), role: "error", text: firstMessage },
+        });
+        finishTask();
+        return;
+      }
+      // Transient stall — one automatic retry before giving up.
       emit({
         kind: "entry",
         entry: {
           id: nextId(),
-          role: "error",
-          text: error instanceof Error ? error.message : String(error),
+          role: "system",
+          text: `Planner stalled (${firstMessage.slice(0, 120)}) — retrying once…`,
         },
       });
-      finishTask();
-      return;
+      try {
+        turn = await runPlannerTurn(new AbortController());
+      } catch (secondError) {
+        if (signal.aborted) { finishTask(); return; }
+        errorCount++;
+        emit({
+          kind: "entry",
+          entry: {
+            id: nextId(),
+            role: "error",
+            text:
+              (secondError instanceof Error ? secondError.message : String(secondError)) +
+              " Retried once and failed again — switch to a faster provider/model (Groq openai/gpt-oss-20b) in the options and rerun.",
+          },
+        });
+        finishTask();
+        return;
+      }
     }
 
     messages.push({ role: "assistant", text: turn.text, toolCalls: turn.toolCalls });
@@ -1078,7 +1107,17 @@ function warnIfInjected(snapshot: PageSnapshot, emit: (e: AgentEvent) => void): 
 }
 
 /** Max wall-clock time per planner turn before it is aborted as stalled. */
-const TURN_TIMEOUT_MS = 100_000;
+const TURN_TIMEOUT_MS = 60_000;
+
+/**
+ * Stall/transient failure classifiers — these warrant one automatic retry.
+ * Everything else (bad model, rejected key, malformed request) is not retried.
+ */
+function isRetryablePlannerError(message: string): boolean {
+  return /did not respond within|rate.?limit|timed? ?out|network|fetch failed|econn|overloaded|temporarily|503|429|502|504|timeout/i.test(
+    message,
+  );
+}
 
 /**
  * Resolve a promise unless it takes longer than `ms`, in which case call
