@@ -9,7 +9,7 @@ import type {
 import { normaliseSettings } from "../shared/types";
 import { runTask } from "./agent";
 import { saveSession, getSessions, deleteSession, clearHistory } from "./history";
-import { recordExperience, getMemoryStats } from "./experience-memory";
+import { recordExperience, getMemoryStats, getExperiencesForDomain } from "./experience-memory";
 import { reflectOnRun } from "./reflection";
 import { getLedgerSummary } from "./privacy-ledger";
 import { applyReflectionResults, getLearnedRules, getRulesSummary } from "./learned-rules";
@@ -452,9 +452,14 @@ async function start(task: string, tabId: number): Promise<void> {
         // Store the experience in memory.
         await recordExperience(lastExperience);
 
+        // Count prior visits (this run is already stored, so subtract one) —
+        // site-pattern rules require evidence across visits.
+        const domainExperiences = await getExperiencesForDomain(lastExperience.domain);
+        const priorVisitCount = Math.max(0, domainExperiences.length - 1);
+
         // Run reflection to generate new rules.
         const existingRules = await getLearnedRules();
-        const reflectionResult = reflectOnRun(lastExperience, existingRules);
+        const reflectionResult = reflectOnRun(lastExperience, existingRules, priorVisitCount);
 
         // Apply new rules to the rules store.
         if (reflectionResult.newRules.length > 0) {
@@ -575,6 +580,7 @@ chrome.runtime.onMessage.addListener(
           const { clearLearnedRules } = await import("./learned-rules");
           await clearExperienceMemory();
           await clearLearnedRules();
+          await chrome.storage.local.remove(LAST_REFLECTION_KEY);
           sendResponse({ ok: true });
         })();
         return true;

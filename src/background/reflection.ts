@@ -65,10 +65,15 @@ export interface ReflectionResult {
 
 /**
  * Analyze a completed run and generate improvement rules.
+ *
+ * `priorVisitCount` is how many times this domain appeared in stored
+ * experiences BEFORE this run — site-pattern rules require at least one prior
+ * visit so a single accidental visit can never brand a domain.
  */
 export function reflectOnRun(
   experience: RunExperience,
   existingRules: LearnedRule[],
+  priorVisitCount: number = 0,
 ): ReflectionResult {
   const newRules: LearnedRule[] = [];
   const confirmedRules: string[] = [];
@@ -152,8 +157,9 @@ export function reflectOnRun(
 
   // ── 3. Analyze Site-Specific Patterns ───────────────────────────────────
 
-  // If this site has been visited multiple times, look for patterns.
-  if (experience.domain && experience.piiDetections.length > 0) {
+  // Only after a domain has been visited more than once does a site pattern
+  // carry evidence — a single run (e.g. one help page) must not brand a domain.
+  if (experience.domain && priorVisitCount >= 1 && experience.piiDetections.length >= 3) {
     const piiKinds = [...new Set(experience.piiDetections.map((p) => p.kind))];
     const rule = generateSitePatternRule(experience, piiKinds, existingRules);
     if (rule) {
@@ -248,6 +254,11 @@ function generateMissedPIIRule(
   pii: PIIExperience,
   existingRules: LearnedRule[],
 ): LearnedRule | null {
+  // OCR noise reports generic "pii_text" misses (text OCR couldn't classify);
+  // a rule like "add detection for pii_text" is unactionable. Only concrete
+  // kinds get rules.
+  if (pii.kind === "pii_text" || pii.kind === "face") return null;
+
   const duplicate = existingRules.find(
     (r) =>
       r.category === "pii_detection" &&

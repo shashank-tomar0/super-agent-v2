@@ -310,19 +310,41 @@ export function extractDomain(url: string): string {
 
 /**
  * Classify page type from URL and content heuristics.
+ *
+ * Uses scoring rather than first-match: bare words like "account", "payment"
+ * and "balance" appear on nearly every page (Gmail inbox previews, settings
+ * pages), so a single occurrence must never classify a page as banking. Email
+ * is resolved by URL first — a mail client is unambiguous regardless of what
+ * its inbox previews contain.
  */
 export function classifyPageType(url: string, title: string, text: string): string {
-  const combined = `${url} ${title} ${text}`.toLowerCase();
+  const s = `${url} ${title} ${text}`.toLowerCase();
 
-  if (/bank|finance|account|balance|transfer|payment|upi|neft|rtgs/.test(combined)) return "banking";
-  if (/mail|inbox|compose|gmail|outlook|yahoo.*mail/.test(combined)) return "email";
-  if (/login|signin|sign.in|auth|credential/.test(combined)) return "auth";
-  if (/shop|cart|checkout|amazon|flipkart|product|buy/.test(combined)) return "ecommerce";
-  if (/form|survey|quiz|填写|申请/.test(combined)) return "form";
-  if (/social|feed|timeline|profile|tweet|post|facebook|twitter|instagram|linkedin/.test(combined)) return "social";
-  if (/search|query|result|google|bing|duckduckgo/.test(combined)) return "search";
-  if (/doc|sheet|slide|notion|confluence|wiki/.test(combined)) return "productivity";
-  if (/gov|aadhaar|pan|passport|tax|return|filing/.test(combined)) return "government";
+  // Email: mail-client URLs are unambiguous — an inbox preview mentioning
+  // "balance" or "payment" must not reclassify the client as banking.
+  if (/mail\.google\.com|outlook\.(com|live|office365)|proton(\.me|mail)|yahoo\.com\/mail|icloud\.com\/mail|zoho\.com\/mail|mail\.yahoo\.com/.test(s)) return "email";
+  if (/(^|[\s./])(inbox|compose|sent mail|drafts|spam)([\s/.]|$)/.test(s) && /@/.test(s)) return "email";
+
+  // Banking: strong terms score 3, medium terms 2, weak terms 1; a page must
+  // reach 3 to be banking. "balance" or "payment" alone never classifies.
+  // aadhaar/otp are deliberately excluded — they belong to government/auth
+  // contexts, not banking.
+  const banking =
+    (s.match(/\b(upi|neft|rtgs|net\s?banking|cvv|iban)\b/g)?.length ?? 0) * 3 +
+    (s.match(/\b(credit\s?card|debit\s?card|account\s?(number|no\.?)|bank\s?account|savings\s?account|transaction\s?(history|details)|netbanking)\b/g)?.length ?? 0) * 2 +
+    (s.match(/\b(bank|banking|balance|statement|transfer|payment|finance|account)\b/g)?.length ?? 0);
+  if (banking >= 3) return "banking";
+
+  // Auth: strong login vocabulary only — "password" appears in every settings
+  // page; "credential" in every security blurb.
+  if (/(login|signin|sign-in|log in|log-in|2fa|two-factor|otp|forgot password|reset password|change password)/.test(s)) return "auth";
+
+  if (/\b(shop|cart|checkout|product|buy now|amazon|flipkart|myntra|ajio)\b/.test(s)) return "ecommerce";
+  if (/\b(form|survey|quiz)\b/.test(s)) return "form";
+  if (/\b(feed|timeline|profile|tweet|post|facebook|twitter|instagram|linkedin|reddit)\b/.test(s)) return "social";
+  if (/\b(search|query|results?|bing|duckduckgo)\b/.test(s)) return "search";
+  if (/\b(doc|sheet|slide|notion|confluence|wiki|docs\.google)\.?\b/.test(s)) return "productivity";
+  if (/\b(gov\.in|aadhaar|pan card|passport|tax filing|itr|gst)\b/.test(s)) return "government";
 
   return "other";
 }

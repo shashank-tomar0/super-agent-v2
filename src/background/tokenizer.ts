@@ -354,6 +354,81 @@ export class PIITokenizer {
   }
 
   /**
+   * Replace every vault value still present in a snapshot's element values,
+   * names, or page text back with its token — even on elements no detector
+   * flagged.
+   *
+   * Why this exists: after the agent types a resolved value into a field, the
+   * re-perceived snapshot carries it in the input's `value`. Page-text
+   * detectors often never see it (e.g. Gmail's compose dialog is outside the
+   * `[role=main]` container pageText() reads), so the element value would ride
+   * raw into the next planner turn. The vault knows every value ever
+   * tokenized, so this sweep guarantees no snapshot that reaches the model
+   * contains a raw vault value, regardless of what the detectors saw.
+   */
+  redactVaultValuesInSnapshot(snapshot: {
+    elements: Array<{ id: number; role: string; name: string; value?: string; attrs?: Record<string, string> }>;
+    text: string;
+  }): {
+    elements: Array<{ id: number; role: string; name: string; value?: string; attrs?: Record<string, string> }>;
+    text: string;
+  } {
+    const entries = Array.from(this.vault.values())
+      .filter((e) => e.original.length >= 4)
+      .sort((a, b) => b.original.length - a.original.length);
+    if (entries.length === 0) {
+      return { elements: snapshot.elements, text: snapshot.text };
+    }
+
+    const replaceIn = (text: string): string => {
+      let out = String(text);
+      for (const entry of entries) {
+        const val = entry.original;
+        if (!out.includes(val)) continue;
+        const escaped = val.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const isAlpha = /^[A-Za-z ]+$/.test(val);
+        const pattern = isAlpha
+          ? new RegExp(`(^|[^A-Za-z])${escaped}(?=$|[^A-Za-z])`, "g")
+          : new RegExp(escaped, "g");
+        out = out.replace(pattern, (match, lead) => `${lead ?? ""}${entry.token}`);
+      }
+      return out;
+    };
+
+    const elements = snapshot.elements.map((el) => {
+      let changed = false;
+      const next = { ...el };
+      if (next.value && this.vaultHasValue(next.value)) {
+        const replaced = replaceIn(next.value);
+        if (replaced !== next.value) {
+          next.value = replaced;
+          changed = true;
+        }
+      }
+      if (next.name && this.vaultHasValue(next.name)) {
+        const replaced = replaceIn(next.name);
+        if (replaced !== next.name) {
+          next.name = replaced;
+          changed = true;
+        }
+      }
+      return changed ? next : el;
+    });
+
+    const text = this.vaultHasValue(snapshot.text) ? replaceIn(snapshot.text) : snapshot.text;
+    return { elements, text };
+  }
+
+  /** True when `text` contains any vault original value (cheap pre-check). */
+  private vaultHasValue(text: string): boolean {
+    if (!text) return false;
+    for (const entry of this.vault.values()) {
+      if (entry.original.length >= 4 && text.includes(entry.original)) return true;
+    }
+    return false;
+  }
+
+  /**
    * Get a summary of all tokenized values (for debugging/demo).
    * Does NOT expose the original values — just the token→kind mapping plus a
    * masked sample ("r•••@gmail.com") so the UI can show what was tokenized.

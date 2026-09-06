@@ -679,4 +679,100 @@ const ollamaFallback = createPlanner({
 ok("blank ollama model falls back to its default (no key needed)",
   ollamaFallback.label.includes("qwen2.5:1.5b"), `label=${ollamaFallback.label}`);
 
+// ─── Scenario M: honest page typing + leak-proof snapshots ─────────────────
+console.log("\n=== Scenario M: page classification + vault sweep + rule gates ===\n");
+
+// 1. A Gmail inbox whose previews mention "balance"/"payment" must stay
+//    "email" — never "banking" (the misclassification that poisoned learning).
+ok("Gmail inbox with balance/payment previews classifies as email, not banking",
+  classifyPageType(
+    "https://mail.google.com/mail/u/0/#inbox",
+    "Inbox - rahul@gmail.com - Gmail",
+    "Compose Inbox Starred Snoozed Purchases nse_alerts Funds/Securities Balance - Paytm payment due today",
+  ) === "email",
+  `got ${classifyPageType("https://mail.google.com/mail/u/0/#inbox", "Inbox - rahul@gmail.com - Gmail", "Compose Inbox Starred Snoozed Purchases nse_alerts Funds/Securities Balance - Paytm payment due today")}`);
+ok("bare 'account' page is not banking",
+  classifyPageType("https://example.com/settings", "My Account Settings", "Change your account password and email preferences") !== "banking",
+  `got ${classifyPageType("https://example.com/settings", "My Account Settings", "Change your account password and email preferences")}`);
+ok("real banking page (upi + account number + balance) classifies as banking",
+  classifyPageType(
+    "https://netbanking.icicibank.com/",
+    "Net Banking",
+    "UPI transfer, your account number 123456789012, available balance Rs 45,000, IMPS/NEFT transfers",
+  ) === "banking",
+  `got ${classifyPageType("https://netbanking.icicibank.com/", "Net Banking", "UPI transfer, your account number 123456789012, available balance Rs 45,000, IMPS/NEFT transfers")}`);
+ok("aadhaar-only page classifies as government, not banking",
+  classifyPageType("https://uidai.gov.in/", "Aadhaar", "Aadhaar card, update your Aadhaar details, download e-Aadhaar") === "government",
+  `got ${classifyPageType("https://uidai.gov.in/", "Aadhaar", "Aadhaar card, update your Aadhaar details, download e-Aadhaar")}`);
+
+// 2. Vault sweep: a value the agent typed into a field (which the page-text
+//    detectors never see) must still be tokenized before the snapshot ships.
+tokenizer.clear();
+tokenizer.tokenize("shashank.tomar.work@gmail.com", "credential");
+const typedField = {
+  elements: [
+    { id: 0, role: "textbox", name: "Recipients", value: "shashank.tomar.work@gmail.com" },
+    { id: 1, role: "textbox", name: "Subject", value: "" },
+  ],
+  text: "Compose New Message",
+};
+const swept = tokenizer.redactVaultValuesInSnapshot(typedField);
+const sweptJson = JSON.stringify(swept);
+ok("vault sweep tokenizes a typed value no detector flagged",
+  !sweptJson.includes("shashank.tomar.work@gmail.com") && sweptJson.includes("<CRED_"),
+  sweptJson);
+ok("vault sweep leaves empty/plain fields alone",
+  swept.elements[1].value === "" && swept.elements[0].name === "Recipients");
+
+// 3. Rule gates: generic OCR "pii_text" misses never become rules; concrete
+//    misses do; site patterns need a prior visit + real evidence.
+const expMissGeneric = {
+  id: "exp-miss-generic",
+  timestamp: Date.now(),
+  task: "scan page",
+  domain: "noise.example.com",
+  pageType: "email",
+  piiDetections: [{ kind: "pii_text", method: "ocr", outcome: "missed", confidence: 0.6 }],
+  actions: [],
+  taskSuccess: true,
+  durationMs: 100,
+  piiRedacted: 0,
+  estimatedTokens: 0,
+  rulesGenerated: [],
+  userCorrections: [],
+};
+const reflGeneric = reflectOnRun(expMissGeneric, []);
+ok("generic pii_text OCR miss generates no rule",
+  !reflGeneric.newRules.some((r) => r.category === "pii_detection" && r.pattern.condition.startsWith("missed:")),
+  JSON.stringify(reflGeneric.newRules));
+
+const expMissConcrete = {
+  ...expMissGeneric,
+  id: "exp-miss-concrete",
+  piiDetections: [{ kind: "credential", method: "ocr", outcome: "missed", confidence: 0.6 }],
+};
+const reflConcrete = reflectOnRun(expMissConcrete, []);
+ok("concrete credential miss still generates a rule",
+  reflConcrete.newRules.some((r) => r.pattern.condition === "missed:credential:ocr"),
+  JSON.stringify(reflConcrete.newRules.map((r) => r.pattern.condition)));
+
+const expSiteFirst = {
+  ...expMissGeneric,
+  id: "exp-site-first",
+  domain: "single.example.com",
+  piiDetections: [
+    { kind: "credential", method: "regex", outcome: "true_positive", confidence: 0.9 },
+    { kind: "pii_text", method: "contextual", outcome: "true_positive", confidence: 0.8 },
+    { kind: "id_number", method: "regex", outcome: "true_positive", confidence: 0.9 },
+  ],
+};
+const reflSiteFirst = reflectOnRun(expSiteFirst, [], 0);
+ok("site pattern rule requires a prior visit",
+  !reflSiteFirst.newRules.some((r) => r.category === "site_pattern"),
+  JSON.stringify(reflSiteFirst.newRules.map((r) => r.category)));
+const reflSiteSecond = reflectOnRun(expSiteFirst, [], 1);
+ok("second visit with real evidence generates a site pattern",
+  reflSiteSecond.newRules.some((r) => r.category === "site_pattern"),
+  JSON.stringify(reflSiteSecond.newRules.map((r) => r.category)));
+
 console.log(`\n${passed} assertions passed. Pipeline verified end-to-end.`);

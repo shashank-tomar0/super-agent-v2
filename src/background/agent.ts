@@ -167,11 +167,21 @@ function sanitizeSnapshot(
   //    instead of raw values.
   const tokenized = tokenizer.tokenizeDetections(snapshot, allDetections);
 
+  // 3b. Vault sweep: replace ANY remaining vault value in element values,
+  //     names, or page text with its token — even on elements no detector
+  //     flagged. Without this, a value the agent just typed into a field
+  //     (e.g. an email in Gmail's compose To box, which sits outside the
+  //     container pageText() reads) would ride raw into the next planner turn.
+  const swept = tokenizer.redactVaultValuesInSnapshot({
+    elements: tokenized.elements,
+    text: tokenized.text,
+  });
+
   // 4. Redact whatever could not be tokenized (replace with [REDACTED]).
   const { elements, text, redactedCount } = redactSnapshot(
     {
-      elements: tokenized.elements,
-      text: tokenized.text,
+      elements: swept.elements,
+      text: swept.text,
     },
     allDetections,
   );
@@ -717,11 +727,14 @@ export async function runTask(
     let opened = false;
 
     const onText = (delta: string): void => {
+      // Belt-and-braces: never let a raw vault value render in the transcript
+      // even if one somehow reached the model's context.
+      const safe = tokenizer.redactValues(delta);
       if (!opened) {
         opened = true;
-        emit({ kind: "entry", entry: { id: entryId, role: "assistant", text: delta } });
+        emit({ kind: "entry", entry: { id: entryId, role: "assistant", text: safe } });
       } else {
-        emit({ kind: "patch", id: entryId, text: delta });
+        emit({ kind: "patch", id: entryId, text: safe });
       }
     };
 
