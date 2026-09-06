@@ -596,6 +596,15 @@ $("learning-close").addEventListener("click", () => {
   learningDashboardEl.classList.add("hidden");
 });
 
+// Reset learning memory (experiences + rules + ledger) — useful when a buggy
+// run polluted the memory with garbage rules, so the demo starts clean.
+$("learning-reset").addEventListener("click", async () => {
+  await send({ kind: "clear-learning" });
+  await send({ kind: "reset" });
+  await refreshLearningDashboard();
+  loadLedger();
+});
+
 // ─── Task Submission ───────────────────────────────────────────────────────
 
 async function submit(task?: string): Promise<void> {

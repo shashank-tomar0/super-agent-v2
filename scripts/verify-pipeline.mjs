@@ -61,7 +61,7 @@ const {
   getApplicableRules, buildSuppressionKeys, recommendsLLMOnly,
 } = await import("../src/background/learned-rules.ts");
 const { recordRedaction, recordVerification, getLedgerSummary, clearLedger } = await import("../src/background/privacy-ledger.ts");
-const { verifyRegions, emptyVerification, piiKindFromOcrLabel, detectPIIInText } = await import("../src/background/reocr-verification.ts");
+const { verifyRegions, emptyVerification, piiKindFromOcrLabel, detectPIIInText, regionGradientEnergy, regionChangedFraction } = await import("../src/background/reocr-verification.ts");
 
 // ─── The exact sanitize flow from agent.ts sanitizeSnapshot() ───────────────
 function sanitizeSnapshot(snapshot) {
@@ -345,6 +345,32 @@ const origD5 = makeImage(40, 40, white);
 const redD5 = makeImage(40, 40, (x, y) => (x >= 30 && y >= 30 ? black() : white()));
 const vD5 = verifyRegions(origD5, redD5, [{ x: 30, y: 30, width: 30, height: 30, kind: "credential", label: "Edge region" }]);
 ok("clamped out-of-bounds region verifies", vD5.verified && vD5.regionsRedacted === 1, JSON.stringify(vD5));
+
+// D6: faint GRAY placeholder text (like "Recipients" in a Gmail compose
+// field) that was blurred → mean diff stays low but sharpness collapses, so
+// it must verify via gradient-energy, not fail with a fake leak.
+const origD6 = makeImage(90, 30, (x, y) => {
+  // Light-gray glyph bars on white — low contrast placeholder text.
+  if (x >= 10 && x < 14 && y >= 8 && y < 22) return [165, 165, 165];
+  if (x >= 20 && x < 24 && y >= 8 && y < 22) return [165, 165, 165];
+  if (x >= 30 && x < 34 && y >= 8 && y < 22) return [165, 165, 165];
+  return [255, 255, 255];
+});
+// Blur (deterministic box blur averages every pixel toward a smooth tone —
+// the blurred region spans the whole field, so no interior hard edges remain).
+const redD6 = makeImage(90, 30, () => [190, 190, 190]);
+const e0 = regionGradientEnergy(origD6, 0, 0, 90, 30);
+const e1 = regionGradientEnergy(redD6, 0, 0, 90, 30);
+ok("blur collapses sharpness energy of faint placeholder text",
+  e0 > 0 && e1 < e0 * 0.5, `e0=${e0} e1=${e1}`);
+const vD6 = verifyRegions(origD6, redD6, [{ x: 0, y: 0, width: 90, height: 30, kind: "input_field", label: "Recipients" }]);
+ok("verifier accepts the blurred faint-placeholder field",
+  vD6.verified && vD6.regionsRedacted === 1, JSON.stringify(vD6));
+
+// D7: same faint text but NOT redacted (identical pixels) → still leaks.
+const vD7 = verifyRegions(origD6, origD6, [{ x: 0, y: 0, width: 90, height: 30, kind: "input_field", label: "Recipients" }]);
+ok("unchanged faint text still FAILS verification (no blur applied)",
+  !vD7.verified && vD7.regionsRedacted === 0, JSON.stringify(vD7));
 
 ok("emptyVerification reports nothing-to-verify as verified", emptyVerification().verified === true);
 

@@ -162,6 +162,78 @@ export function regionDiffScore(
 }
 
 /**
+ * Sum of local luminance gradient magnitudes in a region — a proxy for text
+ * sharpness. A real blur collapses this energy even when the source text is
+ * faint gray on white (where the mean pixel diff stays small), while an
+ * untouched region keeps its energy. Higher = sharper content.
+ */
+export function regionGradientEnergy(
+  img: PixelImage,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): number {
+  const region = clampRegion(img, x, y, width, height);
+  if (!region) return 0;
+
+  let energy = 0;
+  for (let py = region.y + 2; py < region.y + region.height - 2; py += 2) {
+    for (let px = region.x + 2; px < region.x + region.width - 2; px += 2) {
+      const l = ((py * img.width + px - 2) * 4);
+      const r = ((py * img.width + px + 2) * 4);
+      const u = (((py - 2) * img.width + px) * 4);
+      const d = (((py + 2) * img.width + px) * 4);
+      if (r + 2 >= img.data.length || u < 0) continue;
+      const grayR = (img.data[r] + img.data[r + 1] + img.data[r + 2]) / 3;
+      const grayL = (img.data[l] + img.data[l + 1] + img.data[l + 2]) / 3;
+      const grayU = (img.data[u] + img.data[u + 1] + img.data[u + 2]) / 3;
+      const grayD = (img.data[d] + img.data[d + 1] + img.data[d + 2]) / 3;
+      energy += Math.abs(grayR - grayL) + Math.abs(grayD - grayU);
+    }
+  }
+  return energy;
+}
+
+/**
+ * Fraction (0-1) of sampled pixels whose brightness changed by at least
+ * `threshold` levels between the original and redacted image over a region.
+ * A blur visibly moves a large share of pixels even when the mean shift is
+ * small; an untouched region is near 0.
+ */
+export function regionChangedFraction(
+  original: PixelImage,
+  redacted: PixelImage,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  threshold: number = 8,
+): number {
+  const region = clampRegion(original, x, y, width, height);
+  if (!region) return 0;
+
+  let changed = 0;
+  let count = 0;
+  for (let py = region.y; py < region.y + region.height; py += 3) {
+    for (let px = region.x; px < region.x + region.width; px += 3) {
+      const oi = (py * original.width + px) * 4;
+      const ri = (py * redacted.width + px) * 4;
+      if (ri + 2 >= redacted.data.length || oi + 2 >= original.data.length) continue;
+      const dr = Math.abs(original.data[oi] - redacted.data[ri]);
+      const dg = Math.abs(original.data[oi + 1] - redacted.data[ri + 1]);
+      const db = Math.abs(original.data[oi + 2] - redacted.data[ri + 2]);
+      if (dr >= threshold || dg >= threshold || db >= threshold) changed++;
+      count++;
+    }
+  }
+  return count > 0 ? changed / count : 0;
+}
+
+/** Kinds whose redaction is a blur rather than a solid mask. */
+const BLUR_KINDS = new Set(["input_field", "credential_label", "face", "credential"]);
+
+/**
  * Variance of luminance inside a region. Uniform regions (blank fields, solid
  * backgrounds) have variance near 0; regions containing text or a face have
  * high variance. Used to decide whether a region held content worth leaking.
@@ -238,6 +310,19 @@ export function verifyRegions(
       if (diff > 0.12) {
         regionsRedacted++;
         continue;
+      }
+      // Blur verification: a real blur collapses local gradient (sharpness)
+      // energy and moves a large fraction of pixels, even when the source
+      // text is faint gray (placeholder text) and the mean diff stays low.
+      // An untouched region keeps its sharpness and pixel identity.
+      if (BLUR_KINDS.has(region.kind)) {
+        const e0 = regionGradientEnergy(original, region.x, region.y, region.width, region.height);
+        const e1 = regionGradientEnergy(redacted, region.x, region.y, region.width, region.height);
+        const changed = regionChangedFraction(original, redacted, region.x, region.y, region.width, region.height);
+        if ((e0 > 800 && e1 < Math.max(e0 * 0.45, 120)) || changed > 0.1) {
+          regionsRedacted++;
+          continue;
+        }
       }
       leakedPatterns.push(
         `"${region.label}" (${region.kind}) at ${region.x},${region.y} was not visibly redacted — original content may still be visible.`,

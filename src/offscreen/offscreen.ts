@@ -202,6 +202,73 @@ function regionsOverlap(
   return !(a.x + a.width < b.x || b.x + b.width < a.x || a.y + a.height < b.y || b.y + b.height < a.y);
 }
 
+// ─── Deterministic Blur ─────────────────────────────────────────────────────
+//
+// Manual separable box blur on ImageData. ctx.filter = "blur(...)" is not
+// guaranteed on OffscreenCanvas in every Chrome build — when it silently
+// no-ops, the region never changes and re-OCR verification correctly reports
+// it as unredacted (the "WARNING: 0/3 regions" failure). A deterministic
+// pixel blur always alters the region, so redaction + verification agree
+// everywhere. Cost is trivial for field/face-sized regions.
+
+function blurChannel(
+  img: { width: number; height: number; data: Uint8ClampedArray },
+  channel: number,
+  radius: number,
+): void {
+  const { width: w, height: h, data } = img;
+  const tmp = new Float64Array(w * h);
+  const span = radius * 2 + 1;
+
+  // Horizontal pass with a sliding window.
+  for (let y = 0; y < h; y++) {
+    const rowBase = y * w;
+    let sum = 0;
+    for (let k = -radius; k <= radius; k++) {
+      const x = Math.min(w - 1, Math.max(0, k));
+      sum += data[(rowBase + x) * 4 + channel];
+    }
+    for (let x = 0; x < w; x++) {
+      tmp[rowBase + x] = sum / span;
+      const addX = Math.min(w - 1, x + radius + 1);
+      const remX = Math.max(0, x - radius);
+      sum += data[(rowBase + addX) * 4 + channel] - data[(rowBase + remX) * 4 + channel];
+    }
+  }
+
+  // Vertical pass with a sliding window, written straight back.
+  for (let x = 0; x < w; x++) {
+    let sum = 0;
+    for (let k = -radius; k <= radius; k++) {
+      const y = Math.min(h - 1, Math.max(0, k));
+      sum += tmp[y * w + x];
+    }
+    for (let y = 0; y < h; y++) {
+      data[(y * w + x) * 4 + channel] = sum / span;
+      const addY = Math.min(h - 1, y + radius + 1);
+      const remY = Math.max(0, y - radius);
+      sum += tmp[addY * w + x] - tmp[remY * w + x];
+    }
+  }
+}
+
+/** Box-blur an (x, y, w, h) device-pixel region in place on the context. */
+function boxBlurRegion(
+  ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+): void {
+  const r = Math.min(40, Math.max(2, Math.round(radius)));
+  const image = ctx.getImageData(x, y, width, height);
+  blurChannel(image, 0, r);
+  blurChannel(image, 1, r);
+  blurChannel(image, 2, r);
+  ctx.putImageData(image, x, y);
+}
+
 function mergeRects(
   a: { x: number; y: number; width: number; height: number; confidence: number },
   b: { x: number; y: number; width: number; height: number; confidence: number },
@@ -288,13 +355,9 @@ async function processScreenshot(
     const useBlur = region.kind === "credential_label" || region.kind === "input_field";
 
     if (useBlur) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(rx, ry, rw, rh);
-      ctx.clip();
-      ctx.filter = "blur(12px)";
-      ctx.drawImage(canvas, rx, ry, rw, rh, rx, ry, rw, rh);
-      ctx.restore();
+      // Deterministic blur (see boxBlurRegion): alters pixels on every Chrome
+      // build, so re-OCR verification can always confirm the redaction.
+      boxBlurRegion(ctx, rx, ry, rw, rh, 6 * scale);
     } else {
       ctx.fillStyle = "#000000";
       ctx.fillRect(rx, ry, rw, rh);
@@ -360,14 +423,8 @@ async function processScreenshot(
     const rh = Math.min(height - ry, Math.round(face.height + expandY * 2));
 
     if (rw > 10 && rh > 10) {
-      // Apply Gaussian blur to face region.
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(rx, ry, rw, rh);
-      ctx.clip();
-      ctx.filter = "blur(20px)";
-      ctx.drawImage(canvas, rx, ry, rw, rh, rx, ry, rw, rh);
-      ctx.restore();
+      // Apply blur to face region (deterministic, verifiable).
+      boxBlurRegion(ctx, rx, ry, rw, rh, 10 * scale);
 
       allDetections.push({
         kind: "face",
