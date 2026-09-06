@@ -30,6 +30,11 @@ import { createPlanner } from "./providers";
 import type { ConvMessage, ToolOutcome } from "./providers/types";
 import type { ActionExperience, PIIExperience, RunExperience } from "./experience-memory";
 import { extractDomain, classifyPageType } from "./experience-memory";
+import { detectContextualPII, contextualToDetectedPII } from "./contextual-pii";
+import {
+  initLedger, recordSnapshot, recordDetections,
+  recordAction as ledgerRecordAction,
+} from "./privacy-ledger";
 
 let counter = 0;
 const nextId = () => `e${++counter}`;
@@ -77,8 +82,13 @@ function sanitizeSnapshot(snapshot: PageSnapshot): {
   piiCount: number;
   detections: Array<{ kind: string; method: string; confidence: number }>;
 } {
-  // 1. Detect PII in the DOM snapshot.
-  const detections = detectAllPII(snapshot);
+  // 1. Detect PII: regex patterns + contextual analysis.
+  const regexDetections = detectAllPII(snapshot);
+  const contextualDetections = detectContextualPII(snapshot);
+  const contextualPII = contextualToDetectedPII(contextualDetections);
+  // Merge: regex first, then contextual (avoid duplicates by element ID).
+  const seenElementIds = new Set(regexDetections.filter((d) => d.elementSelector).map((d) => d.elementSelector));
+  const allDetections = [...regexDetections, ...contextualPII.filter((d) => !d.elementSelector || !seenElementIds.has(d.elementSelector))];
 
   // 2. Tokenize sensitive values in the snapshot.
   const tokenized = tokenizer.tokenizeSnapshot(snapshot);
@@ -89,7 +99,7 @@ function sanitizeSnapshot(snapshot: PageSnapshot): {
       elements: tokenized.elements,
       text: tokenized.text,
     },
-    detections,
+    allDetections,
   );
 
   return {
@@ -99,7 +109,10 @@ function sanitizeSnapshot(snapshot: PageSnapshot): {
       text,
     },
     piiCount: redactedCount + tokenized.tokenCount,
-    detections: detections.map((d) => ({ kind: d.kind, method: "regex", confidence: d.confidence })),
+    detections: [
+      ...regexDetections.map((d) => ({ kind: d.kind, method: "regex", confidence: d.confidence })),
+      ...contextualDetections.map((d) => ({ kind: d.kind, method: "contextual", confidence: d.confidence })),
+    ],
   };
 }
 
@@ -160,6 +173,9 @@ export async function runTask(
   let estimatedTokens = 0;
   let errorCount = 0;
 
+  // ── Privacy Budget Ledger ──
+  initLedger();
+
   let controller = new TabController(startTabId);
   const tab = await chrome.tabs.get(startTabId);
 
@@ -194,8 +210,16 @@ export async function runTask(
 
   let piiTotal = 0;
   if (snapshot) {
+    // Record snapshot in privacy ledger.
+    recordSnapshot(snapshot.url, snapshot.title, snapshot.elements.length).catch(() => {});
+
     const { sanitized, piiCount, detections } = sanitizeSnapshot(snapshot);
     snapshot = sanitized;
+
+    // Record detections in privacy ledger.
+    if (detections.length > 0) {
+      recordDetections(detections.map((d) => ({ ...d, label: d.kind }))).catch(() => {});
+    }
     piiTotal += piiCount;
 
     // Track PII detections for experience memory.
@@ -534,6 +558,9 @@ export async function runTask(
         strategy: "llm",
         error: result.ok ? undefined : result.detail,
       });
+
+      // Record action in privacy ledger.
+      ledgerRecordAction(call.name, result.ok, typeof call.input.element_id === "number" ? call.input.element_id : undefined).catch(() => {});
 
       emit({ kind: "patch", id: stepId, text: result.detail, pending: false });
 
