@@ -735,15 +735,36 @@ export async function runTask(
       }
     }
 
+    // Show that a planner call is in flight — a slow first token otherwise
+    // looks like a freeze between the last log line and the first streamed text.
+    emit({
+      kind: "entry",
+      entry: {
+        id: nextId(),
+        role: "system",
+        text: `Consulting ${planner.label}…`,
+      },
+    });
+
     let turn;
     try {
-      turn = await planner.run({
-        system: systemPrompt,
-        messages,
-        tools: TOOLS,
-        signal,
-        onText,
-      });
+      // Bound every planner turn: a stalled provider (slow first token, a
+      // dropped stream, a hung connection) must become an actionable error,
+      // not an infinite RUNNING state. The turn-local abort cancels the
+      // underlying request on timeout; the user's Stop still wins first.
+      const turnAbort = new AbortController();
+      turn = await withTurnTimeout(
+        planner.run({
+          system: systemPrompt,
+          messages,
+          tools: TOOLS,
+          signal: mergeAbort(signal, turnAbort.signal),
+          onText,
+        }),
+        TURN_TIMEOUT_MS,
+        `The planner (${planner.label}) did not respond within ${Math.round(TURN_TIMEOUT_MS / 1000)}s. The provider may be overloaded or the network stalled — press Stop and retry, or switch provider/model in the options.`,
+        () => turnAbort.abort(),
+      );
     } catch (error) {
       if (signal.aborted) { finishTask(); return; }
       errorCount++;
@@ -1054,6 +1075,44 @@ function warnIfInjected(snapshot: PageSnapshot, emit: (e: AgentEvent) => void): 
       text: `Heads up: this page contains text addressed to an AI agent — "${found.slice(0, 120)}". I'm treating it as page content, not as an instruction.`,
     },
   });
+}
+
+/** Max wall-clock time per planner turn before it is aborted as stalled. */
+const TURN_TIMEOUT_MS = 100_000;
+
+/**
+ * Resolve a promise unless it takes longer than `ms`, in which case call
+ * `onTimeout` (to cancel the underlying request) and reject with `message`.
+ * The original promise's later settle is absorbed so nothing is unhandled.
+ */
+function withTurnTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: string,
+  onTimeout: () => void,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      onTimeout();
+      reject(new Error(message));
+    }, ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** Combine the user's Stop signal with a turn-local abort (falls back to the
+ * user signal when AbortSignal.any is unavailable). */
+function mergeAbort(userSignal: AbortSignal, turnSignal: AbortSignal): AbortSignal {
+  return typeof AbortSignal.any === "function" ? AbortSignal.any([userSignal, turnSignal]) : userSignal;
 }
 
 /** UTF-8 byte length of a string (TextEncoder; falls back to char count). */
