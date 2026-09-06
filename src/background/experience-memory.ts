@@ -71,6 +71,10 @@ export interface RunExperience {
   piiRedacted: number;
   /** Total tokens used (estimated from message lengths). */
   estimatedTokens: number;
+  /** How many learned rules were applied during this run (FP suppression, routing). */
+  rulesApplied?: number;
+  /** Bytes sent to a remote planner during this run (0 for local providers). */
+  egressBytes?: number;
   /** Whether re-OCR verification was run and passed. */
   reocrVerified?: boolean;
   /** Re-OCR results: PII found in redacted image. */

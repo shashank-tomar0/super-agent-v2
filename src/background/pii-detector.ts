@@ -3,9 +3,15 @@
  *
  * Runs on-device to detect sensitive data before it crosses any network boundary.
  * Three detection channels:
- *   1. Visual — face detection via TensorFlow.js Face Landmarks Detection
+ *   1. Visual — face detection via Chrome FaceDetector / skin-color fallback
  *   2. DOM — credential fields, API keys, card numbers via regex + element metadata
  *   3. Text — Aadhaar, PAN, SSN, passport numbers via pattern matching
+ *
+ * ID-shaped numbers are not trusted on regex alone: Aadhaar candidates must
+ * pass the Verhoeff checksum and card candidates must pass Luhn. Matches that
+ * fail the checksum are surfaced as `rejected` candidates (a real false
+ * positive signal) instead of being redacted — over-redaction is itself a
+ * privacy failure.
  *
  * All detection is synchronous for DOM/text and returns bounding boxes for
  * visual detection so the redaction engine knows exactly what to blur/mask.
@@ -110,6 +116,8 @@ export async function detectFaces(
   return results;
 }
 
+import { isAadhaarNumber, isCardNumber } from "../shared/checksums";
+
 // ─── DOM-Based PII Detection ───────────────────────────────────────────────
 
 const CREDENTIAL_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
@@ -210,56 +218,126 @@ export function detectDOMPII(snapshot: {
         }
       }
 
-      // Check for card numbers in field values
+      // Check for card numbers in field values. A field explicitly about a
+      // card is trusted regardless; a generic 16-digit string only counts when
+      // it passes Luhn, so order/reference numbers are not redacted as cards.
       if (CARD_NUMBER_PATTERN.test(el.value)) {
-        results.push({
-          kind: "credential",
-          value: el.value,
-          elementSelector: `[data-vless-id="${el.id}"]`,
-          confidence: 0.85,
-          label: "Card number in field",
-        });
+        const cardish = /card|credit|debit|cc[-_\s]|card_/i.test(haystack);
+        if (cardish || isCardNumber(el.value)) {
+          results.push({
+            kind: "credential",
+            value: el.value,
+            elementSelector: `[data-vless-id="${el.id}"]`,
+            confidence: cardish ? 0.9 : 0.85,
+            label: cardish ? "Card number in card field" : "Card number (Luhn valid)",
+          });
+        }
       }
     }
   }
 
   return results;
+}
+
+interface TextPattern {
+  pattern: RegExp;
+  kind: DetectedPII["kind"];
+  label: string;
+  /** Validator: when present, hits that fail it become `rejected` candidates. */
+  validate?: (match: string) => boolean;
 }
 
 /**
  * Scans free text for ID numbers (Aadhaar, PAN, SSN, etc.), email addresses,
- * and phone numbers. Used on page text and snapshot text before sending to server.
+ * and phone numbers. Aadhaar candidates must pass the Verhoeff checksum;
+ * lookalikes are returned in `rejected` so they can be measured as false
+ * positives instead of silently redacted.
  */
-export function detectTextPII(text: string): DetectedPII[] {
-  const results: DetectedPII[] = [];
+export function detectTextPIIDetailed(text: string): {
+  detections: DetectedPII[];
+  rejected: DetectedPII[];
+} {
+  const detections: DetectedPII[] = [];
+  const rejected: DetectedPII[] = [];
 
-  const patterns: Array<{ pattern: RegExp; kind: DetectedPII["kind"]; label: string }> = [
-    ...INDIAN_ID_PATTERNS.map((p) => ({ pattern: p.pattern, kind: "id_number" as const, label: p.label })),
-    ...INTERNATIONAL_ID_PATTERNS.map((p) => ({ pattern: p.pattern, kind: "id_number" as const, label: p.label })),
-    { pattern: EMAIL_PATTERN, kind: "credential" as const, label: "Email address" },
-    { pattern: PHONE_PATTERN, kind: "credential" as const, label: "Phone number" },
+  const patterns: TextPattern[] = [
+    ...INDIAN_ID_PATTERNS.map((p): TextPattern => {
+      const isAadhaar = p.label === "Possible Aadhaar number";
+      return {
+        pattern: p.pattern,
+        kind: "id_number",
+        label: isAadhaar ? "Aadhaar number (Verhoeff ✓)" : p.label,
+        validate: isAadhaar ? (m) => isAadhaarNumber(m) : undefined,
+      };
+    }),
+    ...INTERNATIONAL_ID_PATTERNS.map((p): TextPattern => ({ pattern: p.pattern, kind: "id_number", label: p.label })),
+    { pattern: EMAIL_PATTERN, kind: "credential", label: "Email address" },
+    { pattern: PHONE_PATTERN, kind: "credential", label: "Phone number" },
   ];
 
-  for (const { pattern, kind, label } of patterns) {
+  for (const { pattern, kind, label, validate } of patterns) {
     const globalRegex = pattern.global ? pattern : new RegExp(pattern.source, pattern.flags + "g");
     const matches = text.matchAll(globalRegex);
     for (const match of matches) {
-      if (match.index !== undefined) {
-        results.push({
+      if (match.index === undefined) continue;
+      if (validate && !validate(match[0])) {
+        rejected.push({
           kind,
           value: match[0],
-          confidence: kind === "credential" ? 0.9 : 0.7,
-          label,
+          confidence: 0.15,
+          label: `${label} lookalike (checksum failed)`,
         });
+        continue;
       }
+      detections.push({
+        kind,
+        value: match[0],
+        confidence: kind === "credential" ? 0.9 : 0.7,
+        label,
+      });
     }
   }
 
-  return results;
+  return { detections, rejected };
 }
 
 /**
- * Combined PII detection across all channels.
+ * Scans free text for PII (validated). Kept for callers that only need the
+ * accepted detections; use `detectTextPIIDetailed` to also see lookalikes.
+ */
+export function detectTextPII(text: string): DetectedPII[] {
+  return detectTextPIIDetailed(text).detections;
+}
+
+/**
+ * Combined PII detection across all channels, with rejected lookalikes.
+ * Called before any data leaves the client.
+ */
+export function detectAllPIIDetailed(
+  snapshot: {
+    elements: Array<{
+      id: number;
+      role: string;
+      name: string;
+      value?: string;
+      attrs?: Record<string, string>;
+    }>;
+    text: string;
+  },
+  faceDetections: DetectedPII[] = [],
+): {
+  detections: DetectedPII[];
+  rejected: DetectedPII[];
+} {
+  const text = detectTextPIIDetailed(snapshot.text);
+  return {
+    detections: [...faceDetections, ...detectDOMPII(snapshot), ...text.detections],
+    rejected: text.rejected,
+  };
+}
+
+/**
+ * Combined PII detection across all channels (accepted candidates only).
  * Called before any data leaves the client.
  */
 export function detectAllPII(
@@ -275,9 +353,5 @@ export function detectAllPII(
   },
   faceDetections: DetectedPII[] = [],
 ): DetectedPII[] {
-  return [
-    ...faceDetections,
-    ...detectDOMPII(snapshot),
-    ...detectTextPII(snapshot.text),
-  ];
+  return detectAllPIIDetailed(snapshot, faceDetections).detections;
 }

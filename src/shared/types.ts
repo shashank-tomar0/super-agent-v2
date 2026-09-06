@@ -140,10 +140,13 @@ export interface PrivacyAuditSnapshot {
 /** Service worker -> side panel events. */
 export type AgentEvent =
   | { kind: "entry"; entry: TranscriptEntry }
-  | { kind: "patch"; id: string; text?: string; pending?: boolean }
-  | { kind: "status"; running: boolean }
+  | { kind: "patch"; id: string; text?: string; pending?: boolean }  | { kind: "status"; running: boolean }
   | {
-      kind: "confirm";
+      kind: "egress";
+      /** Total bytes sent to remote planners this task (0 for local-only). */
+      bytes: number;
+    }
+  | { kind: "confirm";
       id: string;
       summary: string;
     }

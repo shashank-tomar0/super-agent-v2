@@ -23,7 +23,7 @@ import { SYSTEM_PROMPT, SYSTEM_PROMPT_LOCAL, taskPrompt } from "./prompt";
 import { TOOLS, PAGE_ACTIONS } from "./tools";
 import { TabController, execute, isRestricted } from "./executor";
 import { detectInjection, gate } from "./safety";
-import { detectAllPII } from "./pii-detector";
+import { detectAllPIIDetailed } from "./pii-detector";
 import { redactSnapshot } from "./redaction";
 import { tokenizer } from "./tokenizer";
 import { tryDeterministic } from "./deterministic";
@@ -32,6 +32,7 @@ import type { ConvMessage, ToolOutcome } from "./providers/types";
 import type { ActionExperience, PIIExperience, RunExperience } from "./experience-memory";
 import { extractDomain, classifyPageType } from "./experience-memory";
 import { detectContextualPII, contextualToDetectedPII } from "./contextual-pii";
+import { getApplicableRules, buildSuppressionKeys, recommendsLLMOnly } from "./learned-rules";
 import {
   initLedger, recordSnapshot, recordDetections,
   recordAction as ledgerRecordAction,
@@ -76,28 +77,74 @@ function renderSnapshot(snapshot: PageSnapshot): string {
 }
 
 /**
- * Apply the full privacy pipeline to a snapshot before it reaches the LLM.
- * Returns a sanitized snapshot and the list of detected PII.
+ * Per-run learning context consulted by the sanitizer. Built once per task
+ * from the rules stored for (domain, page type) — this is what closes the
+ * self-improvement loop: rules learned on earlier runs change what this run
+ * detects, suppresses, and how it plans.
  */
-function sanitizeSnapshot(snapshot: PageSnapshot): {
+interface SanitizeCtx {
+  /** `kind:method` keys to drop (learned false positives). */
+  fpKeys: Set<string>;
+  /** Learned strategy rule says deterministic fails here — skip it. */
+  llmOnly: boolean;
+  /** Total applicable rules loaded for logging/experience. */
+  ruleCount: number;
+}
+
+const EMPTY_SANITIZE_CTX: SanitizeCtx = { fpKeys: new Set(), llmOnly: false, ruleCount: 0 };
+
+/**
+ * Apply the full privacy pipeline to a snapshot before it reaches the LLM.
+ * Returns a sanitized snapshot, the kept PII list, and the false-positive
+ * candidates that were rejected (learned-rule suppression or checksum
+ * failures) so they become measured FP signal instead of over-redaction.
+ */
+function sanitizeSnapshot(
+  snapshot: PageSnapshot,
+  ctx: SanitizeCtx = EMPTY_SANITIZE_CTX,
+): {
   sanitized: PageSnapshot;
   piiCount: number;
   detections: Array<{ kind: string; method: string; confidence: number }>;
+  suppressed: Array<{ kind: string; method: string; confidence: number; value?: string }>;
+  rejected: Array<{ kind: string; method: string; confidence: number; value?: string }>;
 } {
-  // 1. Detect PII: regex patterns + contextual analysis.
-  const regexDetections = detectAllPII(snapshot);
+  // 1. Detect PII: validated regex patterns + contextual analysis. Aadhaar
+  //    lookalikes that fail Verhoeff and card lookalikes that fail Luhn are
+  //    returned separately (never redacted, never sent).
+  const detailed = detectAllPIIDetailed(snapshot);
+  const regexDetections = detailed.detections;
   const contextualDetections = detectContextualPII(snapshot);
   const contextualPII = contextualToDetectedPII(contextualDetections);
-  // Merge: regex first, then contextual (avoid duplicates by element ID).
-  const seenElementIds = new Set(regexDetections.filter((d) => d.elementSelector).map((d) => d.elementSelector));
-  const allDetections = [...regexDetections, ...contextualPII.filter((d) => !d.elementSelector || !seenElementIds.has(d.elementSelector))];
 
-  // 2. Tokenize the values the detectors actually flagged (names, emails,
+  // 2. Learned false-positive suppression — rules from previous runs decide
+  //    that `kind` detected by `method` is noise on this domain/page type.
+  const suppressed: Array<{ kind: string; method: string; confidence: number; value?: string }> = [];
+  const keptRegex = regexDetections.filter((d) => {
+    if (ctx.fpKeys.has(`${d.kind}:regex`)) {
+      suppressed.push({ kind: d.kind, method: "regex", confidence: d.confidence, value: d.value });
+      return false;
+    }
+    return true;
+  });
+  // Merge: regex first, then contextual (avoid duplicates by element ID).
+  const seenElementIds = new Set(keptRegex.filter((d) => d.elementSelector).map((d) => d.elementSelector));
+  const contextualCandidates = contextualPII.filter((d) => !d.elementSelector || !seenElementIds.has(d.elementSelector));
+  const keptContextual = contextualCandidates.filter((d) => {
+    if (ctx.fpKeys.has(`${d.kind}:contextual`)) {
+      suppressed.push({ kind: d.kind, method: "contextual", confidence: d.confidence, value: d.value });
+      return false;
+    }
+    return true;
+  });
+  const allDetections = [...keptRegex, ...keptContextual];
+
+  // 3. Tokenize the values the detectors actually flagged (names, emails,
   //    phones, ID numbers) so they become vault tokens the LLM can reference
   //    instead of raw values.
   const tokenized = tokenizer.tokenizeDetections(snapshot, allDetections);
 
-  // 3. Redact whatever could not be tokenized (replace with [REDACTED]).
+  // 4. Redact whatever could not be tokenized (replace with [REDACTED]).
   const { elements, text, redactedCount } = redactSnapshot(
     {
       elements: tokenized.elements,
@@ -114,9 +161,16 @@ function sanitizeSnapshot(snapshot: PageSnapshot): {
     },
     piiCount: tokenized.tokenCount + redactedCount,
     detections: [
-      ...regexDetections.map((d) => ({ kind: d.kind, method: "regex", confidence: d.confidence })),
-      ...contextualDetections.map((d) => ({ kind: d.kind, method: "contextual", confidence: d.confidence })),
+      ...keptRegex.map((d) => ({ kind: d.kind, method: "regex", confidence: d.confidence })),
+      ...keptContextual.map((d) => ({ kind: d.kind, method: "contextual", confidence: d.confidence })),
     ],
+    suppressed,
+    rejected: detailed.rejected.map((r) => ({
+      kind: r.kind,
+      method: "checksum",
+      confidence: r.confidence,
+      value: r.value,
+    })),
   };
 }
 
@@ -178,6 +232,22 @@ export async function runTask(
   let taskSuccess = false;
   let estimatedTokens = 0;
   let errorCount = 0;
+  let sessionEgressBytes = 0;
+  // Remote planners (everything except local Ollama) cause real data egress;
+  // the badge shows the honest byte count instead of a fake "0 KB".
+  const remotePlanner = settings.provider !== "ollama";
+
+  // False positives (learned-rule suppressions + checksum rejects) become
+  // measured signals — deduped so the same number is not counted per snapshot.
+  const fpSeen = new Set<string>();
+  let falsePositiveCount = 0;
+  function noteFalsePositive(kind: string, method: string, confidence: number, value?: string): void {
+    const key = `${kind}:${method}:${value ?? ""}`;
+    if (fpSeen.has(key)) return;
+    fpSeen.add(key);
+    falsePositiveCount++;
+    trackedPII.push({ kind, method, outcome: "false_positive", confidence });
+  }
 
   // ── Privacy Budget Ledger ──
   await initLedger();
@@ -214,12 +284,36 @@ export async function runTask(
   // Apply privacy pipeline to initial snapshot.
   const pageType = classifyPageType(tab.url ?? "", tab.title ?? "", snapshot?.text ?? "");
 
+  // ── Load learned rules for this (domain, page type). This is where the
+  //    self-improvement loop is closed: rules stored by previous runs change
+  //    what this run detects, suppresses, and how it plans.
+  const applicableRules = await getApplicableRules(domain, pageType);
+  const sanitizeCtx: SanitizeCtx = {
+    fpKeys: buildSuppressionKeys(applicableRules),
+    llmOnly: recommendsLLMOnly(applicableRules),
+    ruleCount: applicableRules.length,
+  };
+  if (applicableRules.length > 0) {
+    const fpRules = applicableRules.filter((r) => r.category === "pii_detection").length;
+    const strategyRules = applicableRules.filter((r) => r.category === "strategy").length;
+    emit({
+      kind: "entry",
+      entry: {
+        id: nextId(),
+        role: "system",
+        text:
+          `Learning: applying ${applicableRules.length} stored rule(s) for ${domain} ` +
+          `(${fpRules} false-positive filter${fpRules === 1 ? "" : "s"}, ${strategyRules} strategy rule${strategyRules === 1 ? "" : "s"}${sanitizeCtx.llmOnly ? ", deterministic disabled by learning" : ""}).`,
+      },
+    });
+  }
+
   let piiTotal = 0;
   if (snapshot) {
     // Record snapshot in privacy ledger.
     recordSnapshot(snapshot.url, snapshot.title, snapshot.elements.length).catch(() => {});
 
-    const { sanitized, piiCount, detections } = sanitizeSnapshot(snapshot);
+    const { sanitized, piiCount, detections, suppressed, rejected } = sanitizeSnapshot(snapshot, sanitizeCtx);
     snapshot = sanitized;
 
     // Record detections in privacy ledger.
@@ -245,6 +339,23 @@ export async function runTask(
         method: det.method,
         outcome: "true_positive",
         confidence: det.confidence,
+      });
+    }
+
+    // False positives are measured, not hidden: rule-suppressed detections
+    // and checksum-rejected lookalikes feed the FP signal back into memory.
+    for (const fp of suppressed) noteFalsePositive(fp.kind, fp.method, fp.confidence, fp.value);
+    for (const rj of rejected) noteFalsePositive(rj.kind, rj.method, rj.confidence, rj.value);
+    if (suppressed.length + rejected.length > 0) {
+      emit({
+        kind: "entry",
+        entry: {
+          id: nextId(),
+          role: "system",
+          text:
+            `Learned filters: rejected ${suppressed.length + rejected.length} false positive(s) ` +
+            `(${suppressed.length} rule-based, ${rejected.length} checksum-verified as lookalikes).`,
+        },
       });
     }
 
@@ -394,7 +505,13 @@ export async function runTask(
       entry: {
         id: nextId(),
         role: "system",
-        text: `Task ended. Total PII items redacted: ${piiTotal}. Token vault cleared.`,
+        text:
+          `Task ended. Total PII items redacted: ${piiTotal}. ` +
+          (sanitizeCtx.ruleCount > 0 || falsePositiveCount > 0
+            ? `Learning: ${sanitizeCtx.ruleCount} rule(s) consulted, ${falsePositiveCount} false positive(s) filtered. `
+            : "") +
+          (remotePlanner ? `Egress: ${formatEgress(sessionEgressBytes)}. ` : "Local planner: zero egress. ") +
+          `Token vault cleared.`,
       },
     });
 
@@ -410,11 +527,14 @@ export async function runTask(
       durationMs: Date.now() - runStartTime,
       piiRedacted: piiTotal,
       estimatedTokens,
+      rulesApplied: sanitizeCtx.ruleCount,
+      egressBytes: sessionEgressBytes,
       rulesGenerated: [],
       userCorrections: [],
     };
 
     emit({ kind: "experience", experience } as unknown as AgentEvent);
+    emit({ kind: "egress", bytes: sessionEgressBytes });
     tokenizer.clear();
   }
 
@@ -435,9 +555,10 @@ export async function runTask(
       return;
     }
 
-    // Deterministic planner: only on step 0 for simple one-shot tasks.
-    // Multi-step tasks should be driven by the LLM which tracks its own progress.
-    if (step === 0) {
+    // Deterministic planner: only on step 0 for simple one-shot tasks, and
+    // only when a learned strategy rule has not flagged deterministic as a
+    // failure mode for this page type.
+    if (step === 0 && !sanitizeCtx.llmOnly) {
       const detResult = tryDeterministic(task, snapshot ?? null);
       if (detResult.resolved && detResult.action) {
         // Only use deterministic for non-navigate actions on step 0.
@@ -475,7 +596,7 @@ export async function runTask(
 
           if (detOutcome.result.snapshot) {
             snapshot = detOutcome.result.snapshot;
-            const { sanitized } = sanitizeSnapshot(snapshot);
+            const { sanitized } = sanitizeSnapshot(snapshot, sanitizeCtx);
             snapshot = sanitized;
           }
 
@@ -509,6 +630,20 @@ export async function runTask(
         emit({ kind: "patch", id: entryId, text: delta });
       }
     };
+
+    // Honest egress meter: remote planners (everything except local Ollama)
+    // actually ship bytes to the cloud, so the badge shows a real count.
+    if (remotePlanner) {
+      try {
+        const payload = JSON.stringify({ system: systemPrompt, messages, tools: TOOLS });
+        const bytes = estimateUtf8Bytes(payload);
+        sessionEgressBytes += bytes;
+        estimatedTokens += Math.ceil(bytes / 4);
+        emit({ kind: "egress", bytes: sessionEgressBytes });
+      } catch {
+        // Measurement is best-effort; the run continues regardless.
+      }
+    }
 
     let turn;
     try {
@@ -603,7 +738,7 @@ export async function runTask(
           // Auto-receive: get fresh snapshot so the LLM immediately has new IDs.
           const freshSnapshot = await controller.snapshot();
           if (freshSnapshot) {
-            const { sanitized: freshSanitized } = sanitizeSnapshot(freshSnapshot);
+            const { sanitized: freshSanitized } = sanitizeSnapshot(freshSnapshot, sanitizeCtx);
             snapshot = freshSanitized;
             // For free-tier: skip offscreen elements entirely for speed.
             if (isFreeTier) {
@@ -694,8 +829,9 @@ ${freshRendered}`,
           const navigated = snapshot && fresh.url !== snapshot.url;
           snapshot = fresh;
 
-          // Apply privacy pipeline to fresh snapshot.
-          const { sanitized, piiCount, detections: freshDetections } = sanitizeSnapshot(snapshot);
+          // Apply privacy pipeline to fresh snapshot (checksum validation +
+          // learned false-positive suppression included).
+          const { sanitized, piiCount, detections: freshDetections, suppressed: freshSuppressed, rejected: freshRejected } = sanitizeSnapshot(snapshot, sanitizeCtx);
           snapshot = sanitized;
 
           // Truncate fresh snapshots to avoid context overflow.
@@ -718,6 +854,10 @@ ${freshRendered}`,
               confidence: det.confidence,
             });
           }
+
+          // Measured false positives from the fresh snapshot (rule + checksum).
+          for (const fp of freshSuppressed) noteFalsePositive(fp.kind, fp.method, fp.confidence, fp.value);
+          for (const rj of freshRejected) noteFalsePositive(rj.kind, rj.method, rj.confidence, rj.value);
 
           warnIfInjected(fresh, emit);
 
@@ -816,6 +956,23 @@ function warnIfInjected(snapshot: PageSnapshot, emit: (e: AgentEvent) => void): 
       text: `Heads up: this page contains text addressed to an AI agent — "${found.slice(0, 120)}". I'm treating it as page content, not as an instruction.`,
     },
   });
+}
+
+/** UTF-8 byte length of a string (TextEncoder; falls back to char count). */
+function estimateUtf8Bytes(value: string): number {
+  try {
+    return new TextEncoder().encode(value).length;
+  } catch {
+    return value.length;
+  }
+}
+
+/** Human-readable byte count for the egress badge. */
+function formatEgress(bytes: number): string {
+  if (bytes <= 0) return "0 KB";
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  return kb < 10 ? `${kb.toFixed(1)} KB` : `${Math.round(kb)} KB`;
 }
 
 /**

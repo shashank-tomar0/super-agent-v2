@@ -43,8 +43,11 @@ globalThis.chrome = {
 };
 
 const {
-  detectAllPII,
+  detectAllPII, detectAllPIIDetailed,
 } = await import("../src/background/pii-detector.ts");
+const {
+  verhoeffValid, verhoeffCheckDigit, isAadhaarNumber, isCardNumber, luhnValid,
+} = await import("../src/shared/checksums.ts");
 const { detectContextualPII, contextualToDetectedPII } = await import("../src/background/contextual-pii.ts");
 const { tokenizer, maskSample } = await import("../src/background/tokenizer.ts");
 const { redactSnapshot } = await import("../src/background/redaction.ts");
@@ -53,7 +56,10 @@ const {
   extractDomain, classifyPageType,
 } = await import("../src/background/experience-memory.ts");
 const { reflectOnRun } = await import("../src/background/reflection.ts");
-const { applyReflectionResults, getLearnedRules, getRulesSummary } = await import("../src/background/learned-rules.ts");
+const {
+  applyReflectionResults, getLearnedRules, getRulesSummary,
+  getApplicableRules, buildSuppressionKeys, recommendsLLMOnly,
+} = await import("../src/background/learned-rules.ts");
 const { recordRedaction, recordVerification, getLedgerSummary, clearLedger } = await import("../src/background/privacy-ledger.ts");
 const { verifyRegions, emptyVerification } = await import("../src/background/reocr-verification.ts");
 
@@ -93,6 +99,18 @@ tokenizer.clear();
 await clearExperienceMemory();
 await clearLedger();
 
+// Checksum math sanity first — Aadhaar is Verhoeff, cards are Luhn.
+const aadhaarSeed = "23456789012"; // 11 digits, no leading 0/1
+const aadhaarDigits = aadhaarSeed + verhoeffCheckDigit(aadhaarSeed);
+const aadhaarFmt = `${aadhaarDigits.slice(0, 4)} ${aadhaarDigits.slice(4, 8)} ${aadhaarDigits.slice(8, 12)}`;
+const badAadhaarSeed = aadhaarDigits.slice(0, 11) + (aadhaarDigits[11] === "9" ? "8" : String(Number(aadhaarDigits[11]) + 1));
+const badAadhaarFmt = `${badAadhaarSeed.slice(0, 4)} ${badAadhaarSeed.slice(4, 8)} ${badAadhaarSeed.slice(8, 12)}`;
+ok("known Verhoeff sample validates (236 → 2363)", verhoeffValid("2363") && verhoeffCheckDigit("236") === 3);
+ok("generated Aadhaar passes Verhoeff", isAadhaarNumber(aadhaarDigits), aadhaarDigits);
+ok("mutated Aadhaar fails Verhoeff", !isAadhaarNumber(badAadhaarSeed), badAadhaarSeed);
+ok("Visa test card passes Luhn", isCardNumber("4111 1111 1111 1111"));
+ok("mutated card fails Luhn", !isCardNumber("4111 1111 1111 1112"));
+
 const snapshotA = {
   url: "https://example.com/profile",
   title: "Edit profile",
@@ -102,9 +120,10 @@ const snapshotA = {
     { id: 2, role: "textbox", name: "Mobile number", value: "+91 98765 43210", attrs: { inputType: "tel" } },
     { id: 3, role: "button", name: "Save changes" },
   ],
-  // Page text holds the actual identity numbers.
+  // Page text holds a real Aadhaar, a PAN, a checksum-invalid Aadhaar
+  // lookalike (must NOT be redacted), plus contact details.
   text:
-    "Identity verification — Aadhaar: 1234 5678 9012, PAN: ABCDE1234F. " +
+    `Identity verification — Aadhaar: ${aadhaarFmt}, PAN: ABCDE1234F. Order ref: ${badAadhaarFmt}. ` +
     "Contact rahul.sharma@gmail.com or +91 98765 43210 for support.",
 };
 
@@ -113,13 +132,19 @@ ok("Aadhaar/PAN/email/phone + contextual fields all detected",
   resultA.detections.length >= 4,
   `got ${resultA.detections.length}: ${JSON.stringify(resultA.detections.map((d) => d.kind))}`);
 
+const detailedA = detectAllPIIDetailed(snapshotA);
+ok("checksum-invalid Aadhaar lookalike rejected, not detected",
+  detailedA.rejected.some((r) => r.value === badAadhaarFmt),
+  JSON.stringify(detailedA.rejected.map((r) => r.value)));
+
 const tokensA = tokenizer.getTokenSummary();
 ok("vault created tokens from detections", tokensA.length > 0, `tokens=${JSON.stringify(tokensA)}`);
 ok("tokens include masked samples", tokensA.every((t) => t.sample && t.sample.includes("•")), "no sample found");
 ok("token sample masks email domain", tokensA.some((t) => t.sample?.includes("@")), "email sample missing @domain");
 
 const rendered = JSON.stringify(resultA.sanitized);
-ok("raw Aadhaar digits gone from sanitized snapshot", !rendered.includes("1234 5678 9012"));
+ok("raw (valid) Aadhaar digits gone from sanitized snapshot", !rendered.includes(aadhaarFmt));
+ok("checksum-invalid lookalike left untouched (no over-redaction)", rendered.includes(badAadhaarFmt));
 ok("raw PAN gone", !rendered.includes("ABCDE1234F"));
 ok("raw email gone", !rendered.includes("rahul.sharma@gmail.com"));
 ok("sanitized snapshot contains token markers", rendered.includes("<")); 
@@ -134,7 +159,11 @@ const experience = {
   task: "scan profile page for PII",
   domain,
   pageType,
-  piiDetections: resultA.detections.map((d) => ({ kind: d.kind, method: d.method, outcome: "true_positive", confidence: d.confidence })),
+  piiDetections: [
+    ...resultA.detections.map((d) => ({ kind: d.kind, method: d.method, outcome: "true_positive", confidence: d.confidence })),
+    // The agent now records checksum-rejected lookalikes as measured FPs.
+    { kind: "id_number", method: "checksum", outcome: "false_positive", confidence: 0.15 },
+  ],
   actions: [],
   taskSuccess: true,
   durationMs: 900,
@@ -149,6 +178,7 @@ const statsA = await getMemoryStats();
 ok("dashboard run count = 1", statsA.totalRuns === 1, `got ${statsA.totalRuns}`);
 ok("dashboard PII detected > 0", statsA.totalPIIDetected > 0, `got ${statsA.totalPIIDetected}`);
 ok("dashboard PII redacted > 0", statsA.totalPIIRedacted > 0, `got ${statsA.totalPIIRedacted}`);
+ok("checksum rejects counted as false positives in memory", statsA.totalFalsePositives === 1, `got ${statsA.totalFalsePositives}`);
 
 await recordRedaction(resultA.piiCount, "dom");
 const ledgerA = await getLedgerSummary();
@@ -355,5 +385,58 @@ const statsE = await getMemoryStats();
 ok("improvement delta computed from only 4 runs",
   statsE.totalRuns === 4 && statsE.improvementDelta > 0,
   JSON.stringify(statsE));
+
+// ─── Scenario F: learned rules are consultable (loop closes) ───────────────
+console.log("\n=== Scenario F: learned rules consulted at runtime ===\n");
+
+// Simulate a rule the reflection engine generated after a false positive:
+// "id_number:regex on example.com email pages is not sensitive".
+await applyReflectionResults({
+  newRules: [{
+    id: "fp-test-1",
+    category: "pii_detection",
+    description: "False positive: id_number detected by regex on email page is not actually sensitive.",
+    pattern: {
+      domain: "example.com",
+      pageType: "email",
+      condition: "false_positive:id_number:regex",
+      action: "reduce_confidence",
+    },
+    confidence: 0.6,
+    confirmedCount: 0,
+    createdAt: Date.now(),
+    lastConfirmedAt: Date.now(),
+  }, {
+    id: "strat-test-1",
+    category: "strategy",
+    description: "llm planner is needed for email pages.",
+    pattern: {
+      pageType: "email",
+      condition: "strategy:llm",
+      action: "use_llm",
+    },
+    confidence: 0.6,
+    confirmedCount: 0,
+    createdAt: Date.now(),
+    lastConfirmedAt: Date.now(),
+  }],
+  confirmedRules: [],
+  contradictedRules: [],
+  summary: "test",
+  metrics: { falsePositives: 0, falseNegatives: 0, strategyOptimizations: 0, sitePatternsFound: 0 },
+});
+
+const applicable = await getApplicableRules("example.com", "email");
+const fpKeys = buildSuppressionKeys(applicable);
+ok("suppression keys include learned id_number:regex FP rule",
+  fpKeys.has("id_number:regex"), JSON.stringify([...fpKeys]));
+ok("learned strategy rule disables deterministic for the page type",
+  recommendsLLMOnly(applicable) === true);
+ok("FP rule does NOT apply to a different domain",
+  buildSuppressionKeys(await getApplicableRules("other.com", "email")).size === 0);
+
+// Sanity: verhoeffValid accepts the generated number and rejects garbage.
+ok("verhoeffValid round-trips",
+  verhoeffValid(aadhaarDigits) && !verhoeffValid(badAadhaarSeed) && luhnValid("4111111111111111"));
 
 console.log(`\n${passed} assertions passed. Pipeline verified end-to-end.`);

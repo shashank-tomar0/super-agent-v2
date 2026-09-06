@@ -1,4 +1,5 @@
 import type { PageElement, PageSnapshot } from "../shared/types";
+import { isAadhaarNumber, isCardNumber } from "../shared/checksums";
 
 /**
  * Elements from the last snapshot, indexed by the id handed to the planner.
@@ -511,6 +512,13 @@ function findTextRegions(patterns: RegExp[]): SensitiveRegion[] {
     for (const pattern of patterns) {
       const match = text.match(pattern);
       if (match && match.index !== undefined) {
+        // ID-shaped numbers are not blacked out on regex alone: 12-digit
+        // lookalikes must pass Verhoeff and 16-digit ones must pass Luhn,
+        // otherwise order/reference numbers get masked as Aadhaar/cards.
+        const digits = match[0].replace(/\D/g, "");
+        if (digits.length === 12 && !isAadhaarNumber(digits)) continue;
+        if (digits.length === 16 && !isCardNumber(digits)) continue;
+
         // Get the bounding box of the text node.
         const range = document.createRange();
         range.setStart(node, match.index);

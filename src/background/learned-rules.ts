@@ -113,6 +113,36 @@ export async function getRulesByCategory(
   return rules.filter((r) => r.category === category);
 }
 
+/**
+ * Pure: build the set of suppression keys (`kind:method`) that the agent
+ * should drop from a page. Keys come from high-confidence false-positive
+ * rules (`condition: false_positive:<kind>:<method>`). Kept pure so the
+ * sanitizer can consult them synchronously per snapshot and the harness can
+ * test the exact logic.
+ */
+export function buildSuppressionKeys(rules: LearnedRule[]): Set<string> {
+  const keys = new Set<string>();
+  for (const rule of rules) {
+    if (rule.category !== "pii_detection" || rule.confidence < 0.5) continue;
+    const m = rule.pattern.condition.match(/^false_positive:([^:]+):([^:]+)$/);
+    if (m) keys.add(`${m[1]}:${m[2]}`);
+  }
+  return keys;
+}
+
+/**
+ * Pure: true when a learned strategy rule says this page type needs the LLM
+ * planner (deterministic already failed here before).
+ */
+export function recommendsLLMOnly(rules: LearnedRule[]): boolean {
+  return rules.some(
+    (r) =>
+      r.category === "strategy" &&
+      r.pattern.action === "use_llm" &&
+      r.confidence >= 0.5,
+  );
+}
+
 export interface RuleSummaryItem {
   id: string;
   category: LearnedRule["category"];

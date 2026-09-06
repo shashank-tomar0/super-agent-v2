@@ -29,6 +29,13 @@ function send(command: PanelCommand): Promise<unknown> {
   return chrome.runtime.sendMessage(command).catch(() => undefined);
 }
 
+function formatEgress(bytes: number): string {
+  if (bytes <= 0) return "0 KB";
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  return kb < 10 ? `${kb.toFixed(1)} KB` : `${Math.round(kb)} KB`;
+}
+
 function atBottom(): boolean {
   return (
     transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 60
@@ -261,6 +268,10 @@ chrome.runtime.onMessage.addListener((event: AgentEvent) => {
       setRunning(event.running);
       break;
 
+    case "egress":
+      if (egressBadge) egressBadge.textContent = `${formatEgress(event.bytes)} EGRESS`;
+      break;
+
     case "confirm":
       pendingConfirmId = event.id;
       if (confirmText) confirmText.textContent = event.summary;
@@ -393,6 +404,16 @@ function renderLearningDashboard(stats: {
     }
   } else {
     rulesEl.innerHTML = `<h4>Learned Rules</h4><p class="empty-sub">No rules learned yet. Complete tasks to start improving.</p>`;
+  }
+
+  // Measured false positives — checksum rejects + rule suppressions that
+  // prevented over-redaction across all runs.
+  if (stats.falsePositives > 0 && stats.rulesSummary.total > 0) {
+    const note = document.createElement("p");
+    note.className = "empty-sub";
+    note.style.cssText = "margin:6px 0 0;";
+    note.textContent = `False-positive filters avoided ${stats.falsePositives} lookalike(s) across runs (Verhoeff/Luhn checksums + learned rules).`;
+    rulesEl.appendChild(note);
   }
 
   // Last reflection.
