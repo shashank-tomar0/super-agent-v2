@@ -458,6 +458,23 @@ export class PIITokenizer {
 }
 
 /**
+ * Remove digit-concatenation corruption from tokens in tool-call input.
+ *
+ * Models occasionally glue digits onto unfamiliar token syntax in type/click
+ * calls — "7<CRED_1>" instead of "<CRED_1>" — which would type the digit
+ * into the field ("7shashank@gmail.com"). A digit directly touching a token
+ * with no whitespace is never intentional; strip it so the resolved value is
+ * exactly the vault value. Characters other than digits are left untouched.
+ */
+export function repairTokenConcatenation(text: string): string {
+  return String(text)
+    // "7<CRED_1>" (digit BEFORE token, not preceded by a letter/number)
+    .replace(/(?<![A-Za-z0-9])\d+<([A-Z]+_\d+)>/g, "<$1>")
+    // "<CRED_1>7" (digit AFTER token, not followed by a letter/number)
+    .replace(/<([A-Z]+_\d+)>\d+(?![A-Za-z0-9])/g, "<$1>");
+}
+
+/**
  * Shared singleton tokenizer instance.
  * Lives for the duration of one task run, then gets cleared.
  */

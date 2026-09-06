@@ -25,7 +25,7 @@ import { TabController, execute, isRestricted } from "./executor";
 import { detectInjection, gate } from "./safety";
 import { detectAllPIIDetailed } from "./pii-detector";
 import { redactSnapshot } from "./redaction";
-import { tokenizer } from "./tokenizer";
+import { tokenizer, repairTokenConcatenation } from "./tokenizer";
 import { tryDeterministic } from "./deterministic";
 import { createPlanner } from "./providers";
 import type { ConvMessage, ToolOutcome } from "./providers/types";
@@ -1241,7 +1241,10 @@ function resolveTokens(input: Record<string, unknown>): Record<string, unknown> 
   const resolved: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
     if (typeof value === "string") {
-      resolved[key] = tokenizer.resolveAll(value);
+      // Strip digit-concatenation corruption ("7<CRED_1>") BEFORE resolution
+      // so the value typed into the page is exactly the vault value — a model
+      // gluing a digit onto a token must not send "7shashank@gmail.com".
+      resolved[key] = tokenizer.resolveAll(repairTokenConcatenation(value));
     } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
       resolved[key] = resolveTokens(value as Record<string, unknown>);
     } else {

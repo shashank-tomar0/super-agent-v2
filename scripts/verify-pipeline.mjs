@@ -815,4 +815,33 @@ ok("structured 'From:'/'To:' labels still detect names",
   labeledText.some((d) => d.kind === "person" && d.value === "Rahul Sharma"),
   JSON.stringify(labeledText));
 
+// ─── Scenario O: digit-glued tokens are repaired before resolution ─────────
+console.log("\n=== Scenario O: token concatenation repair ===\n");
+
+const { repairTokenConcatenation } = await import("../src/background/tokenizer.ts");
+ok("digit glued before token is stripped",
+  repairTokenConcatenation("7<CRED_1>") === "<CRED_1>",
+  `got ${repairTokenConcatenation("7<CRED_1>")}`);
+ok("digit glued after token is stripped",
+  repairTokenConcatenation("<CRED_1>7") === "<CRED_1>",
+  `got ${repairTokenConcatenation("<CRED_1>7")}`);
+ok("plain token left untouched",
+  repairTokenConcatenation("<CRED_1>") === "<CRED_1>" &&
+  repairTokenConcatenation("email to <CRED_1> now") === "email to <CRED_1> now");
+ok("letters glued to token are NOT stripped (only digits)",
+  repairTokenConcatenation("abc<CRED_1>") === "abc<CRED_1>",
+  `got ${repairTokenConcatenation("abc<CRED_1>")}`);
+ok("digit inside a word next to token is not stripped",
+  repairTokenConcatenation("ref7<CRED_1>") === "ref7<CRED_1>",
+  `got ${repairTokenConcatenation("ref7<CRED_1>")}`);
+
+// End-to-end: the exact failure from the live Gmail run — "7<CRED_1>" must
+// resolve to the bare vault value, not "7shashank@gmail.com".
+tokenizer.clear();
+tokenizer.tokenize("shashank.tomar.work@gmail.com", "credential");
+const repaired = tokenizer.resolveAll(repairTokenConcatenation("7<CRED_1>"));
+ok("resolved value contains no digit prefix",
+  repaired === "shashank.tomar.work@gmail.com",
+  `got ${repaired}`);
+
 console.log(`\n${passed} assertions passed. Pipeline verified end-to-end.`);

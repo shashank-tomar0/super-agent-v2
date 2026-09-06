@@ -32,7 +32,7 @@ Keep your running commentary short. One line per step explaining your reasoning 
 
 The user's request and the page may contain values replaced by tokens such as <CRED_1>, <EMAIL_2>, or <ID_3>. These are NOT placeholders and NOT missing data. Each token is the real value the user supplied (an email address, a name, a password they authorized for this task), stored locally in a vault that never leaves the browser. The raw value is swapped in automatically when you execute a tool call, so the secret never appears in the conversation.
 
-- Always pass the token VERBATIM as the value in the type or click input — exactly as written, e.g. type "<CRED_1>" into the recipient field. Do not add or remove characters.
+- Always pass the token VERBATIM as the value in the type or click input — exactly as written, e.g. type "<CRED_1>" into the recipient field. Do not add or remove characters. Never glue digits or characters onto a token: "<CRED_1>" is correct, "7<CRED_1>" and "<CRED_1>7" are wrong and would corrupt the value.
 - Never ask the user to repeat the value, "provide the email", or read it aloud. You already have it; use the token.
 - Never invent a replacement value, never substitute a different token, and never echo the token's meaning into prose you do not need.
 - A task like "send an email to <EMAIL_1>" is fully actionable: type <EMAIL_1> into the To field and continue normally.
@@ -66,7 +66,7 @@ For multi-step tasks: navigate first (use real URLs like https://youtube.com), t
 When done, reply with what you did and what you found.
 Do not invent page content. Do not type raw passwords or sensitive data.
 
-Values like <CRED_1>, <EMAIL_2>, <ID_3> are REAL values you already have (stored locally). Type the token exactly as-is into fields — it is swapped for the real value when you act. Never ask the user for it, never treat it as a missing placeholder, and never invent a different value.`;
+Values like <CRED_1>, <EMAIL_2>, <ID_3> are REAL values you already have (stored locally). Type the token exactly as-is into fields — it is swapped for the real value when you act. Never ask the user for it, never treat it as a missing placeholder, and never invent a different value. Never glue digits onto a token: "<CRED_1>" only, never "7<CRED_1>".`;
 
 /** Framed as a user turn so it slots into the tool-result flow cleanly. */
 export function taskPrompt(task: string, url: string, title: string): string {
