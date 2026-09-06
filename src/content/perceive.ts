@@ -400,11 +400,13 @@ export function getSensitiveRegions(): SensitiveRegion[] {
     const rect = el.getBoundingClientRect();
     if (rect.width < 10 || rect.height < 5) continue; // Skip tiny hidden fields.
 
-    // Skip empty-looking search boxes and nav inputs.
+    // Skip search boxes and nav inputs — a user's search query is not PII, and
+    // search inputs must never become redacted regions. Name check covers
+    // YouTube's "search_query" even when placeholder/role reads fail.
     const name = (el as HTMLInputElement).name?.toLowerCase() ?? "";
     const placeholder = (el as HTMLInputElement).placeholder?.toLowerCase() ?? "";
     const role = el.getAttribute("role")?.toLowerCase() ?? "";
-    if (name === "q" || placeholder.includes("search") || role === "searchbox") continue;
+    if (name.includes("search") || name === "q" || placeholder.includes("search") || role === "searchbox") continue;
 
     processedElements.add(el);
     regions.push({

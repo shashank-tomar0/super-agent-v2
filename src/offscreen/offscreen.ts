@@ -150,8 +150,11 @@ function detectFacesBySkinColor(
         const regionH = maxY - minY;
         const aspectRatio = regionW / regionH;
 
-        // Faces are roughly 1:1 to 1:1.5 aspect ratio.
-        if (aspectRatio > 0.5 && aspectRatio < 2.0 && regionW > 20 && regionH > 20) {
+        // Faces are roughly 1:1 to 1:1.5 aspect ratio. Min size 28px keeps
+        // real faces in thumbnails while dropping tiny avatar icons, and the
+        // cap below stops YouTube-style grids of 14+ thumbnails from turning
+        // the whole page into one giant blur (each also earns a "Face" chip).
+        if (aspectRatio > 0.5 && aspectRatio < 2.0 && regionW > 28 && regionH > 28) {
           regions.push({
             x: minX,
             y: minY,
@@ -164,8 +167,9 @@ function detectFacesBySkinColor(
     }
   }
 
-  // Merge overlapping regions.
-  return mergeOverlappingRegions(regions);
+  // Merge overlapping regions, then cap the count — a thumbnail grid should
+  // not produce an unbounded wall of face blurs.
+  return mergeOverlappingRegions(regions).slice(0, 8);
 }
 
 function mergeOverlappingRegions(

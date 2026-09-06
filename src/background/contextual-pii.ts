@@ -217,8 +217,11 @@ export function detectContextualPII(snapshot: {
     }
   }
 
-  // Scan page text for names near keywords.
-  const nameKeywordPattern = /\b(from|to|sender|recipient|addressed to|sent by|name|company)[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b/g;
+  // Scan page text for names near identity keywords. Only STRUCTURED forms
+  // count ("From:", "To:", "addressed to X", "sent by X") — bare mid-sentence
+  // "to X" / "from X" matches video titles and prose on every site ("…go to
+  // Learn DevOps Bootcamp…"), which produced phantom person detections.
+  const nameKeywordPattern = /\b((?:from|to|sender|recipient|name|company): *|addressed to |sent by )([A-Z][a-z]+(?: +[A-Z][a-z]+){1,3})\b/gi;
   let match;
   while ((match = nameKeywordPattern.exec(snapshot.text)) !== null) {
     const name = match[2];

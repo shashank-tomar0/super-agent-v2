@@ -60,7 +60,7 @@ const {
   applyReflectionResults, getLearnedRules, getRulesSummary,
   getApplicableRules, buildSuppressionKeys, recommendsLLMOnly,
 } = await import("../src/background/learned-rules.ts");
-const { recordRedaction, recordVerification, getLedgerSummary, clearLedger } = await import("../src/background/privacy-ledger.ts");
+const { recordRedaction, recordVerification, recordSnapshot, getLedgerSummary, clearLedger } = await import("../src/background/privacy-ledger.ts");
 const { verifyRegions, emptyVerification, piiKindFromOcrLabel, detectPIIInText, regionGradientEnergy, regionChangedFraction } = await import("../src/background/reocr-verification.ts");
 
 // ─── The exact sanitize flow from agent.ts sanitizeSnapshot() ───────────────
@@ -774,5 +774,45 @@ const reflSiteSecond = reflectOnRun(expSiteFirst, [], 1);
 ok("second visit with real evidence generates a site pattern",
   reflSiteSecond.newRules.some((r) => r.category === "site_pattern"),
   JSON.stringify(reflSiteSecond.newRules.map((r) => r.category)));
+
+// ─── Scenario N: ledger serialization + structured name-scan only ──────────
+console.log("\n=== Scenario N: ledger write serialization + name-scan tightening ===\n");
+
+// The agent fires ledger writes concurrently (snapshot, detection, redaction,
+// action, verification per step). Without serialization the read-modify-write
+// cycles interleave and entries silently vanish — the dashboard showed exactly
+// that (actions/snapshots counted, detections/redactions missing). With the
+// write queue every parallel write must land.
+await clearLedger();
+await Promise.all(
+  Array.from({ length: 20 }, (_, i) => recordSnapshot(`https://example.com/${i}`, "t", 1)),
+);
+const ledgerN = await getLedgerSummary();
+ok("20 parallel ledger writes all land (no lost updates)",
+  ledgerN.totalSnapshots === 20 && ledgerN.totalEntries === 20,
+  `snapshots=${ledgerN.totalSnapshots} entries=${ledgerN.totalEntries}`);
+ok("serialized chain stays intact under concurrency", ledgerN.chainValid === true);
+
+// Name detection must require STRUCTURED identity labels. Bare "to X" / "from
+// X" in prose (video titles, "go to Learn DevOps Bootcamp…") is not a name.
+const proseText = detectContextualPII({
+  elements: [],
+  text: "Welcome to Learn DevOps Bootcamp and Kubernetes from TechWorld with Nana",
+  url: "https://youtube.com/watch?v=abc",
+  title: "DevOps Bootcamp",
+});
+ok("bare 'to/from' prose yields no person detection (no more phantom names)",
+  proseText.every((d) => d.kind !== "person"),
+  JSON.stringify(proseText));
+
+const labeledText = detectContextualPII({
+  elements: [],
+  text: "From: Rahul Sharma\nTo: shashank.tomar.work@gmail.com\nThe meeting is at 5pm.",
+  url: "https://mail.example.com",
+  title: "Inbox",
+});
+ok("structured 'From:'/'To:' labels still detect names",
+  labeledText.some((d) => d.kind === "person" && d.value === "Rahul Sharma"),
+  JSON.stringify(labeledText));
 
 console.log(`\n${passed} assertions passed. Pipeline verified end-to-end.`);

@@ -364,6 +364,10 @@ export async function runTask(
   await controller.waitForLoad();
   let snapshot = await controller.snapshot();
 
+  /** Elements of the snapshot the model most recently saw — used to resolve
+   * stale element ids by role+name without burning a planner round trip. */
+  let lastRenderedElements: Array<{ id: number; role: string; name: string }> = [];
+
   // Apply privacy pipeline to initial snapshot.
   const pageType = classifyPageType(tab.url ?? "", tab.title ?? "", snapshot?.text ?? "");
 
@@ -564,6 +568,7 @@ export async function runTask(
         (initialVisionNote ? `\n\n${initialVisionNote}` : ""),
     },
   ];
+  lastRenderedElements = snapshot?.elements ?? [];
 
   if (snapshot) warnIfInjected(snapshot, emit);
 
@@ -640,6 +645,9 @@ export async function runTask(
 
   for (let step = 0; step < settings.maxSteps; step++) {
     if (signal.aborted) { finishTask(); return; }
+
+    // The model plans against the snapshot rendered in the previous turn.
+    lastRenderedElements = snapshot?.elements ?? [];
 
     // Loop detection — if the agent is stuck repeating the same action, break.
     if (isLooping()) {
@@ -890,6 +898,9 @@ export async function runTask(
       // When stale, auto-receive and inject fresh snapshot to save an LLM round trip.
       const elementId = call.input.element_id;
       if (typeof elementId === "number") {
+        // The id refers to a snapshot the model saw earlier — the current
+        // snapshot no longer contains it, so look it up in what was last shown.
+        const staleTarget = lastRenderedElements.find((e) => e.id === elementId);
         const elExists = snapshot?.elements.some((e) => e.id === elementId);
         if (!elExists) {
           // Auto-receive: get fresh snapshot so the LLM immediately has new IDs.
@@ -907,16 +918,45 @@ export async function runTask(
               snapshot = { ...snapshot, elements: [...vis, ...off].slice(0, maxSnapshotElements), truncated: true };
             }
           }
-          const freshRendered = snapshot ? renderSnapshot(snapshot) : "(no snapshot available)";
-          emit({ kind: "patch", id: stepId, text: `Element ${elementId} stale — re-perceived page.`, pending: false });
-          results.push({
-            id: call.id,
-            isError: true,
-            content: `Element ${elementId} not found. The page changed. Here are the current elements — pick the right one and retry:
+
+          // One-shot auto-retry: if exactly ONE fresh element matches the
+          // stale one by role+name, remap and execute it right away — this is
+          // the "model clicked the same video three times" failure mode, and
+          // it should never cost an extra LLM round trip. Ambiguous matches
+          // (0 or 2+) fall through to the re-perceived error instead.
+          let staleRemapped = false;
+          if (staleTarget && (call.name === "click" || call.name === "type") && snapshot) {
+            const target = staleTarget;
+            const matches = snapshot.elements.filter(
+              (e) => e.role === target.role && e.name === target.name,
+            );
+            if (matches.length === 1) {
+              call.input.element_id = matches[0].id;
+              staleRemapped = true;
+            }
+          }
+
+          if (!staleRemapped) {
+            const freshRendered = snapshot ? renderSnapshot(snapshot) : "(no snapshot available)";
+            emit({ kind: "patch", id: stepId, text: `Element ${elementId} stale — re-perceived page.`, pending: false });
+            results.push({
+              id: call.id,
+              isError: true,
+              content: `Element ${elementId} not found. The page changed. Here are the current elements — pick the right one and retry:
 
 ${freshRendered}`,
+            });
+            continue;
+          }
+
+          emit({
+            kind: "patch",
+            id: stepId,
+            text: `Element ${elementId} stale — matched "${staleTarget?.name ?? "element"}" (now #${call.input.element_id}); retrying automatically.`,
+            pending: false,
           });
-          continue;
+          // Fall through: the normal VALIDATE → RESOLVE → execute path now
+          // runs against the fresh id without another planner round trip.
         }
       }
 

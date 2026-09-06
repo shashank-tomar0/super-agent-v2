@@ -57,6 +57,21 @@ interface LedgerStore {
   lastHash: string;
 }
 
+/**
+ * Ledger writes are read-modify-write cycles over one storage key. The agent
+ * fires many of them concurrently (one per snapshot, detection, redaction,
+ * action, verification), and without serialization each write reads the same
+ * store state and overwrites the others — entries silently vanish. Every write
+ * chains through this queue so cycles never interleave.
+ */
+let writeQueue: Promise<unknown> = Promise.resolve();
+function enqueue<T>(op: () => Promise<T>): Promise<T> {
+  const next = writeQueue.then(op, op);
+  // Keep the chain alive regardless of individual failures.
+  writeQueue = next.catch(() => undefined);
+  return next;
+}
+
 async function loadStore(): Promise<LedgerStore> {
   const { [STORAGE_KEY]: store } = await chrome.storage.local.get(STORAGE_KEY);
   if (store && Array.isArray(store.entries)) {
@@ -100,30 +115,33 @@ export async function addEntry(
   type: LedgerEntry["type"],
   data: Record<string, unknown>,
 ): Promise<LedgerEntry> {
-  const store = await loadStore();
-  const seq = store.entryCounter + 1;
-  const timestamp = Date.now();
+  // Serialize the read-modify-write cycle against every other ledger write.
+  return enqueue(async () => {
+    const store = await loadStore();
+    const seq = store.entryCounter + 1;
+    const timestamp = Date.now();
 
-  // Build the content to hash (excluding hash fields).
-  const content = JSON.stringify({ seq, timestamp, type, data, prevHash: store.lastHash });
-  const hash = await sha256(content);
+    // Build the content to hash (excluding hash fields).
+    const content = JSON.stringify({ seq, timestamp, type, data, prevHash: store.lastHash });
+    const hash = await sha256(content);
 
-  const entry: LedgerEntry = {
-    seq,
-    timestamp,
-    type,
-    data,
-    hash,
-    prevHash: store.lastHash,
-  };
+    const entry: LedgerEntry = {
+      seq,
+      timestamp,
+      type,
+      data,
+      hash,
+      prevHash: store.lastHash,
+    };
 
-  store.lastHash = hash;
-  store.entryCounter = seq;
-  store.entries.push(entry);
+    store.lastHash = hash;
+    store.entryCounter = seq;
+    store.entries.push(entry);
 
-  await saveStore(store);
+    await saveStore(store);
 
-  return entry;
+    return entry;
+  });
 }
 
 /**
