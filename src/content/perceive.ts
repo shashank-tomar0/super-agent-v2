@@ -87,7 +87,49 @@ function accessibleName(el: Element): string {
   const text = clean((el as HTMLElement).innerText ?? el.textContent);
   if (text) return text;
 
-  return clean(el.getAttribute("title") || el.getAttribute("name"));
+  const attrName = clean(el.getAttribute("title") || el.getAttribute("name"));
+  if (attrName) return attrName;
+
+  // Final fallback for nameless fields: infer from surrounding layout.
+  if (isTextEntry(el)) {
+    const layout = layoutLabel(el);
+    if (layout) return layout;
+  }
+
+  return "";
+}
+
+/** True when the element is a control the planner types into or selects from. */
+function isTextEntry(el: Element): boolean {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) return true;
+  if (el.hasAttribute("contenteditable")) return true;
+  const role = el.getAttribute("role");
+  return role === "textbox" || role === "searchbox" || role === "combobox" || role === "password";
+}
+
+/**
+ * Recovers a short label for text-entry fields that ship without aria-labels,
+ * placeholders, or associated <label>s (e.g. Gmail compose "To" / "Subject").
+ * Looks at the previous sibling ("To" next to its input) then the nearest
+ * short ancestor row — never text longer than a field label.
+ */
+function layoutLabel(el: Element): string {
+  const prev = el.previousElementSibling;
+  if (prev instanceof HTMLElement) {
+    const t = clean(prev.innerText ?? prev.textContent ?? "");
+    if (t && t.length <= 40) return t;
+  }
+  let parent = el.parentElement;
+  for (let i = 0; i < 3 && parent; i++) {
+    const t = clean(parent.innerText ?? "");
+    if (!t) {
+      parent = parent.parentElement;
+      continue;
+    }
+    if (t.length <= 60) return t;
+    parent = parent.parentElement;
+  }
+  return "";
 }
 
 function roleOf(el: Element): string {
@@ -192,6 +234,17 @@ export function snapshot(): PageSnapshot {
       const aVisible = ra.top < innerHeight && ra.bottom > 0 ? 0 : 1;
       const bVisible = rb.top < innerHeight && rb.bottom > 0 ? 0 : 1;
       if (aVisible !== bVisible) return aVisible - bVisible;
+      // Dialogs (compose windows, modal forms) come before page content: their
+      // fields are appended late in the DOM and the element budget used to cut
+      // them off exactly when the planner needs them most.
+      const aDialog = a.closest('[role="dialog"],[role="alertdialog"],[aria-modal="true"]') ? 0 : 1;
+      const bDialog = b.closest('[role="dialog"],[role="alertdialog"],[aria-modal="true"]') ? 0 : 1;
+      if (aDialog !== bDialog) return aDialog - bDialog;
+      // Text-entry controls (inputs, comboboxes, contenteditable bodies) first
+      // so the planner can fill forms / compose boxes before seeing link spam.
+      const aEntry = isTextEntry(a) ? 0 : 1;
+      const bEntry = isTextEntry(b) ? 0 : 1;
+      if (aEntry !== bEntry) return aEntry - bEntry;
       return ra.top - rb.top || ra.left - rb.left;
     });
 
@@ -200,8 +253,13 @@ export function snapshot(): PageSnapshot {
     const name = accessibleName(el);
     const role = roleOf(el);
     const value = valueOf(el);
-    // A nameless, valueless div with a tabindex is noise, not a control.
-    if (!name && !value && role !== "textbox" && role !== "select") continue;
+    // A nameless, valueless div with a tabindex is noise, not a control — but
+    // nameless text-entry roles stay (a bare "textbox" the planner can still
+    // type into is more useful than a field that silently disappears).
+    const namelessAllowed =
+      role === "textbox" || role === "select" ||
+      role === "combobox" || role === "searchbox" || role === "password";
+    if (!name && !value && !namelessAllowed) continue;
 
     const id = registry.push(el) - 1;
     elements.push({ id, role, name, value, attrs: attributesOf(el) });

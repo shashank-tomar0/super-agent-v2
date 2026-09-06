@@ -202,14 +202,27 @@ export async function getMemoryStats(): Promise<MemoryStats> {
     }
   }
 
-  // Improvement delta: compare success rate of last 5 runs vs first 5 runs.
+  // Improvement delta: success rate of the most recent runs vs the runs right
+  // before them. Experiences are stored newest-first. With >= 4 runs we split
+  // into halves (min 2 per window) so the trend is visible long before the
+  // old 10-run threshold; action-level reliability adds signal within a run.
   let improvementDelta = 0;
-  if (totalRuns >= 10) {
-    const first5 = experiences.slice(-5);
-    const last5 = experiences.slice(0, 5);
-    const firstRate = first5.filter((e) => e.taskSuccess).length / 5;
-    const lastRate = last5.filter((e) => e.taskSuccess).length / 5;
-    improvementDelta = lastRate - firstRate;
+  if (totalRuns >= 4) {
+    const win = Math.min(3, Math.floor(totalRuns / 2));
+    const recent = experiences.slice(0, win);
+    const previous = experiences.slice(win, win * 2);
+    if (recent.length > 0 && previous.length > 0) {
+      const recentWin = recent.reduce(
+        (acc, e) => acc + (e.taskSuccess ? 1 : 0) + actionSuccessRate(e) * 0.5,
+        0,
+      ) / recent.length;
+      const prevWin = previous.reduce(
+        (acc, e) => acc + (e.taskSuccess ? 1 : 0) + actionSuccessRate(e) * 0.5,
+        0,
+      ) / previous.length;
+      // Normalise the action component so the combined score stays in 0-1.
+      improvementDelta = (recentWin - prevWin) / 1.5;
+    }
   }
 
   return {
@@ -255,6 +268,12 @@ export function classifyPageType(url: string, title: string, text: string): stri
   if (/gov|aadhaar|pan|passport|tax|return|filing/.test(combined)) return "government";
 
   return "other";
+}
+
+/** Fraction of actions that succeeded within one run (0-1; 1 when no actions). */
+function actionSuccessRate(experience: RunExperience): number {
+  if (experience.actions.length === 0) return 1;
+  return experience.actions.filter((a) => a.success).length / experience.actions.length;
 }
 
 /**

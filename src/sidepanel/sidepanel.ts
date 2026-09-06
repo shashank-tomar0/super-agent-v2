@@ -296,6 +296,14 @@ function renderLearningDashboard(stats: {
     byCategory: Record<string, number>;
     highConfidence: number;
     recentlyCreated: number;
+    recent?: Array<{
+      id: string;
+      category: string;
+      description: string;
+      confidence: number;
+      confirmedCount: number;
+      createdAt: number;
+    }>;
   };
   lastReflection: string;
 }): void {
@@ -333,23 +341,48 @@ function renderLearningDashboard(stats: {
     </div>
   `;
 
-  // Rules by category.
+  // Learned rules — show the ACTUAL rules (what was learned), not just counts.
   const rulesEl = $("learning-rules");
+  const categoryLabels: Record<string, string> = {
+    pii_detection: "PII Detection",
+    strategy: "Strategy",
+    site_pattern: "Site Pattern",
+    redaction: "Redaction",
+    safety: "Safety",
+  };
   if (stats.rulesSummary.total > 0) {
-    const categoryLabels: Record<string, string> = {
-      pii_detection: "PII Detection",
-      strategy: "Strategy",
-      site_pattern: "Site Pattern",
-      redaction: "Redaction",
-      safety: "Safety",
-    };
     rulesEl.innerHTML = `<h4>Learned Rules (${stats.rulesSummary.total})</h4><div class="rule-list"></div>`;
     const list = rulesEl.querySelector(".rule-list")!;
-    for (const [cat, count] of Object.entries(stats.rulesSummary.byCategory)) {
-      const chip = document.createElement("span");
-      chip.className = `rule-chip ${cat}`;
-      chip.textContent = `${categoryLabels[cat] ?? cat}: ${count}`;
-      list.appendChild(chip);
+    const items = stats.rulesSummary.recent ?? [];
+    if (items.length > 0) {
+      for (const rule of items) {
+        const item = document.createElement("div");
+        item.className = "rule-item";
+        const top = document.createElement("div");
+        top.className = "rule-top";
+        const tag = document.createElement("span");
+        tag.className = `rule-tag ${rule.category}`;
+        tag.textContent = categoryLabels[rule.category] ?? rule.category;
+        const conf = document.createElement("span");
+        conf.className = "rule-conf";
+        conf.textContent = `conf ${Math.round(rule.confidence * 100)}%${rule.confirmedCount > 0 ? ` · confirmed ×${rule.confirmedCount}` : ""}`;
+        top.appendChild(tag);
+        top.appendChild(conf);
+        const desc = document.createElement("span");
+        desc.className = "rule-desc";
+        desc.textContent = rule.description;
+        item.appendChild(top);
+        item.appendChild(desc);
+        list.appendChild(item);
+      }
+    } else {
+      // Fallback for producers that predate the rule-content field.
+      for (const [cat, count] of Object.entries(stats.rulesSummary.byCategory)) {
+        const chip = document.createElement("span");
+        chip.className = `rule-chip ${cat}`;
+        chip.textContent = `${categoryLabels[cat] ?? cat}: ${count}`;
+        list.appendChild(chip);
+      }
     }
     if (stats.rulesSummary.highConfidence > 0) {
       const badge = document.createElement("span");

@@ -962,6 +962,49 @@ body::after {
 .rule-chip.site_pattern { border-color: #8e44ad; color: #8e44ad; }
 .rule-chip.redaction { border-color: #e67e22; color: #e67e22; }
 
+.rule-list { display: flex; flex-direction: column; gap: 5px; }
+.rule-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-hairline);
+  background: var(--color-paper);
+}
+.rule-item .rule-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+.rule-tag {
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: 1px solid;
+}
+.rule-tag.pii_detection { border-color: var(--color-accent); color: var(--color-accent); }
+.rule-tag.strategy { border-color: var(--color-teal); color: var(--color-teal); }
+.rule-tag.site_pattern { border-color: #8e44ad; color: #8e44ad; }
+.rule-tag.redaction { border-color: #e67e22; color: #e67e22; }
+.rule-tag.safety { border-color: var(--color-ink); color: var(--color-ink); }
+.rule-conf {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--color-ink-2);
+  white-space: nowrap;
+}
+.rule-desc {
+  font-family: var(--font-body);
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+
 .learning-reflection { padding: 0 16px 12px; }
 .learning-reflection .reflection-text {
   font-family: var(--font-body);

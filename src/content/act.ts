@@ -61,21 +61,42 @@ function setNativeValue(el: HTMLInputElement | HTMLTextAreaElement, value: strin
   else el.value = value;
 }
 
-async function typeInto(el: Element, text: string, submit: boolean): Promise<ActionResult> {
-  await bringIntoView(el);
-  (el as HTMLElement).focus({ preventScroll: true });
+/**
+ * Finds the actually-writable node inside an element. Some field components
+ * (Gmail's compose recipient box, many UI kits) expose a `role=combobox` or
+ * label wrapper around the real <input>/<textarea>/contenteditable, so typing
+ * must target the inner control, not the wrapper.
+ */
+function writableTarget(el: Element): Element | null {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return el;
+  if (el.hasAttribute("contenteditable")) return el;
+  const role = el.getAttribute("role");
+  if (role === "combobox" || role === "textbox" || role === "searchbox") {
+    const inner = el.querySelector("input:not([type=hidden]), textarea, [contenteditable=''], [contenteditable=true]");
+    if (inner) return inner;
+  }
+  return null;
+}
 
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-    setNativeValue(el, "");
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    setNativeValue(el, text);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-  } else if (el.hasAttribute("contenteditable")) {
-    (el as HTMLElement).textContent = text;
-    el.dispatchEvent(new InputEvent("input", { bubbles: true }));
-  } else {
+async function typeInto(el: Element, text: string, submit: boolean): Promise<ActionResult> {
+  const target = writableTarget(el);
+  if (!target) {
     return fail(`${describe(el)} is not a text field.`);
+  }
+  await bringIntoView(target);
+  (target as HTMLElement).focus({ preventScroll: true });
+
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    setNativeValue(target, "");
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+    setNativeValue(target, text);
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+  } else if (target.hasAttribute("contenteditable")) {
+    (target as HTMLElement).textContent = text;
+    target.dispatchEvent(new InputEvent("input", { bubbles: true }));
+  } else {
+    return fail(`${describe(target)} is not a text field.`);
   }
 
   if (submit) {
@@ -89,16 +110,16 @@ async function typeInto(el: Element, text: string, submit: boolean): Promise<Act
     };
     // dispatchEvent returns false when a page handler called preventDefault —
     // that is our signal the page took the keypress and will submit itself.
-    const handled = !el.dispatchEvent(new KeyboardEvent("keydown", enter));
-    el.dispatchEvent(new KeyboardEvent("keyup", enter));
+    const handled = !target.dispatchEvent(new KeyboardEvent("keydown", enter));
+    target.dispatchEvent(new KeyboardEvent("keyup", enter));
     // Plain forms ignore a synthetic Enter, so submit them directly instead.
-    const form = (el as HTMLInputElement).form;
+    const form = (target as HTMLInputElement).form;
     if (!handled && form) form.requestSubmit?.();
     await sleep(400);
   }
 
   return done(
-    `Typed ${JSON.stringify(text)} into ${describe(el)}${submit ? " and pressed Enter" : ""}.`,
+    `Typed ${JSON.stringify(text)} into ${describe(target)}${submit ? " and pressed Enter" : ""}.`,
   );
 }
 

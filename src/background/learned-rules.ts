@@ -113,14 +113,25 @@ export async function getRulesByCategory(
   return rules.filter((r) => r.category === category);
 }
 
+export interface RuleSummaryItem {
+  id: string;
+  category: LearnedRule["category"];
+  description: string;
+  confidence: number;
+  confirmedCount: number;
+  createdAt: number;
+}
+
 /**
- * Get a summary of rules for the dashboard.
+ * Get a summary of rules for the dashboard, including the actual rule
+ * contents (most recent first) so learning is visible — not just counts.
  */
 export async function getRulesSummary(): Promise<{
   total: number;
   byCategory: Record<string, number>;
   highConfidence: number;
   recentlyCreated: number;
+  recent: RuleSummaryItem[];
 }> {
   const rules = await getRules();
   const oneHourAgo = Date.now() - 60 * 60 * 1000;
@@ -135,11 +146,24 @@ export async function getRulesSummary(): Promise<{
     if (rule.createdAt > oneHourAgo) recentlyCreated++;
   }
 
+  const recent = [...rules]
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 10)
+    .map((r) => ({
+      id: r.id,
+      category: r.category,
+      description: r.description,
+      confidence: r.confidence,
+      confirmedCount: r.confirmedCount,
+      createdAt: r.createdAt,
+    }));
+
   return {
     total: rules.length,
     byCategory,
     highConfidence,
     recentlyCreated,
+    recent,
   };
 }
 

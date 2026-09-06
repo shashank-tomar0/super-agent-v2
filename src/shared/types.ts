@@ -186,6 +186,14 @@ export type AgentEvent =
           byCategory: Record<string, number>;
           highConfidence: number;
           recentlyCreated: number;
+          recent?: Array<{
+            id: string;
+            category: string;
+            description: string;
+            confidence: number;
+            confirmedCount: number;
+            createdAt: number;
+          }>;
         };
         lastReflection: string;
       };

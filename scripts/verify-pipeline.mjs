@@ -162,6 +162,10 @@ if (reflection.newRules.length > 0) {
   await applyReflectionResults(reflection);
   const summary = await getRulesSummary();
   ok("reflection generated rules", summary.total > 0, JSON.stringify(summary));
+  ok("rules summary exposes actual rule contents (not just counts)",
+    Array.isArray(summary.recent) && summary.recent.length > 0 &&
+    summary.recent.every((r) => typeof r.description === "string" && r.description.length > 0),
+    JSON.stringify(summary.recent));
 } else {
   console.log("  (no new rules this run — acceptable for a single run)");
 }
@@ -319,5 +323,37 @@ await recordVerification(true, 4, 0);
 const ledgerD = await getLedgerSummary();
 ok("ledger records verification entries", ledgerD.lastEntryType === "verification", `got ${ledgerD.lastEntryType}`);
 ok("ledger chain still intact after verification", ledgerD.chainValid === true);
+
+// ─── Scenario E: improvement trend is visible after just 4 runs ─────────────
+console.log("\n=== Scenario E: improvement delta from 4 runs ===\n");
+await clearExperienceMemory();
+
+const mkExp = (id, taskSuccess, actionOk, actionTotal) => ({
+  id,
+  timestamp: Date.now(),
+  task: id,
+  domain: "example.com",
+  pageType: "other",
+  piiDetections: [],
+  actions: Array.from({ length: actionTotal }, (_, i) => ({
+    tool: "click", success: actionOk > i, latencyMs: 10, strategy: "llm",
+  })),
+  taskSuccess,
+  durationMs: 100,
+  piiRedacted: 0,
+  estimatedTokens: 0,
+  rulesGenerated: [],
+  userCorrections: [],
+});
+// Newest-first storage: e4/e3 are the recent window, e2/e1 the previous one.
+await recordExperience(mkExp("e1", false, 0, 2));
+await recordExperience(mkExp("e2", false, 0, 2));
+await recordExperience(mkExp("e3", true, 2, 2));
+await recordExperience(mkExp("e4", true, 1, 2));
+
+const statsE = await getMemoryStats();
+ok("improvement delta computed from only 4 runs",
+  statsE.totalRuns === 4 && statsE.improvementDelta > 0,
+  JSON.stringify(statsE));
 
 console.log(`\n${passed} assertions passed. Pipeline verified end-to-end.`);
