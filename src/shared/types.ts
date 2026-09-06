@@ -229,19 +229,25 @@ export interface Settings {
   maxSteps: number;
   /** Ask before click/type on anything that looks irreversible. */
   confirmRisky: boolean;
-  /** VLESS server configuration for privacy-preserving VLM processing. */
-  server: ServerSettings;
+  /**
+   * Optional VLM vision: after each page change, the REDACTED screenshot is
+   * sent to a vision-capable model (same provider key as the planner) and its
+   * description is appended to the tool result. Only redacted pixels leave
+   * the browser; vision request bytes count toward the honest egress badge.
+   */
+  vision: VisionSettings;
   /** Privacy pipeline configuration. */
   privacy: PrivacySettings;
 }
 
-export interface ServerSettings {
-  /** Whether to use the VLESS server for VLM processing. */
+export interface VisionSettings {
+  /** Whether visual observation is active after page-changing actions. */
   enabled: boolean;
-  /** Server URL (default: http://localhost:3001). */
-  url: string;
-  /** API key for the VLESS server (optional, for authenticated servers). */
-  apiKey: string;
+  /**
+   * Vision model id for the active provider. Empty means "use the provider's
+   * default vision model" (see VISION_DEFAULT_MODELS in background/vision.ts).
+   */
+  model: string;
 }
 
 export interface PrivacySettings {
@@ -268,10 +274,9 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   maxSteps: 40,
   confirmRisky: true,
-  server: {
+  vision: {
     enabled: false,
-    url: "http://localhost:3001",
-    apiKey: "",
+    model: "",
   },
   privacy: {
     blurFaces: true,
@@ -292,14 +297,26 @@ interface LegacySettings {
  * version so an existing install keeps its key instead of silently losing it.
  */
 export function normaliseSettings(stored: unknown): Settings {
-  const raw = (stored ?? {}) as Partial<Settings> & LegacySettings;
+  const source = (stored ?? {}) as Partial<Settings> & LegacySettings;
+
+  // The pre-vision builds shipped a dead "VLESS server" toggle. Read its
+  // intent off the raw input, then strip the key so it never leaks into the
+  // settings object (old stored settings may still carry it).
+  const legacyServerEnabled =
+    (source as unknown as { server?: { enabled?: boolean } }).server?.enabled === true;
+  const raw = { ...source };
+  delete (raw as unknown as { server?: unknown }).server;
 
   const settings: Settings = {
     ...DEFAULT_SETTINGS,
     ...raw,
     apiKeys: { ...DEFAULT_SETTINGS.apiKeys, ...(raw.apiKeys ?? {}) },
     models: { ...DEFAULT_SETTINGS.models, ...(raw.models ?? {}) },
-    server: { ...DEFAULT_SETTINGS.server, ...(raw.server ?? {}) },
+    vision: {
+      ...DEFAULT_SETTINGS.vision,
+      ...(raw.vision ?? {}),
+      enabled: raw.vision?.enabled ?? legacyServerEnabled,
+    },
     privacy: { ...DEFAULT_SETTINGS.privacy, ...(raw.privacy ?? {}) },
   };
 

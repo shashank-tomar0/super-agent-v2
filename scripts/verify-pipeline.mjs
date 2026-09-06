@@ -451,4 +451,63 @@ ok("detectPIIInText finds card + email in OCR text",
 ok("detectPIIInText finds nothing in clean redacted text",
   detectPIIInText("Thanks for your order. Regards, Support").length === 0);
 
+// ─── Scenario H: VLM vision — redacted-only observation, honest egress ─────
+console.log("\n=== Scenario H: VLM vision request building ===\n");
+
+const {
+  buildVisionRequest, parseVisionResponse,
+  VISION_SUPPORTED, VISION_DEFAULT_MODELS,
+} = await import("../src/background/vision.ts");
+const { normaliseSettings } = await import("../src/shared/types.ts");
+
+const REDACTED_JPEG = "data:image/jpeg;base64,/9j/4AAQSkZJRg==";
+const visionCtx = "URL: https://example.com\nTitle: Profile\nElements: [0]textbox \"Full name\" =Rahul Sharma\nText: Hi <CRED_1>";
+
+ok("every provider has a default vision model",
+  Object.values(VISION_DEFAULT_MODELS).every((m) => typeof m === "string" && m.length > 0));
+
+const groqReq = buildVisionRequest("groq", VISION_DEFAULT_MODELS.groq, "gsk_test", REDACTED_JPEG, visionCtx);
+ok("groq vision goes to the OpenAI-compatible endpoint",
+  groqReq.url === "https://api.groq.com/openai/v1/chat/completions", groqReq.url);
+const groqParts = groqReq.body.messages[0].content;
+ok("groq body carries ONLY the redacted image as image_url",
+  Array.isArray(groqParts) && groqParts[1].type === "image_url" && groqParts[1].image_url.url === REDACTED_JPEG);
+ok("vision prompt forbids transcribing redacted regions",
+  groqParts[0].text.includes("Never transcribe text inside"));
+ok("vision bytes are measured from the actual payload", groqReq.bytes > 500, `bytes=${groqReq.bytes}`);
+ok("groq vision request carries the auth header", groqReq.headers.authorization === "Bearer gsk_test");
+
+const ollamaReq = buildVisionRequest("ollama", VISION_DEFAULT_MODELS.ollama, "", REDACTED_JPEG, visionCtx);
+ok("ollama vision uses the local endpoint with no auth header",
+  ollamaReq.url === "http://localhost:11434/v1/chat/completions" && !ollamaReq.headers.authorization);
+
+const nvidiaReq = buildVisionRequest("nvidia", VISION_DEFAULT_MODELS.nvidia, "nvapi-test", REDACTED_JPEG, visionCtx);
+ok("nvidia vision endpoint is correct",
+  nvidiaReq.url === "https://integrate.api.nvidia.com/v1/chat/completions", nvidiaReq.url);
+
+const anthropicReq = buildVisionRequest("anthropic", VISION_DEFAULT_MODELS.anthropic, "sk-ant-test", REDACTED_JPEG, visionCtx);
+const anthropicParts = anthropicReq.body.messages[0].content;
+ok("anthropic body uses a native image block with base64 payload only",
+  Array.isArray(anthropicParts) && anthropicParts[1].type === "image" &&
+  anthropicParts[1].source.media_type === "image/jpeg" &&
+  anthropicParts[1].source.data === "/9j/4AAQSkZJRg==");
+ok("anthropic vision request carries the required headers",
+  anthropicReq.headers["x-api-key"] === "sk-ant-test" &&
+  anthropicReq.headers["anthropic-version"] === "2023-06-01");
+
+ok("openai-style vision response parses",
+  parseVisionResponse("groq", { choices: [{ message: { content: "A login page." } }] }) === "A login page.");
+ok("anthropic-style vision response parses",
+  parseVisionResponse("anthropic", { content: [{ type: "text", text: "A dashboard." }] }) === "A dashboard.");
+ok("anthropic response with no text block yields empty string",
+  parseVisionResponse("anthropic", { content: [{ type: "image" }] }) === "");
+
+// Settings: new vision config defaults + legacy dead-server migration.
+const visionDefaults = normaliseSettings(undefined);
+ok("default settings: vision disabled, model blank, no server key",
+  visionDefaults.vision.enabled === false && visionDefaults.vision.model === "" && !("server" in visionDefaults));
+const migratedVision = normaliseSettings({ server: { enabled: true, url: "http://localhost:3001", apiKey: "x" } });
+ok("legacy dead server.enabled migrates to vision.enabled",
+  migratedVision.vision.enabled === true && !("server" in migratedVision));
+
 console.log(`\n${passed} assertions passed. Pipeline verified end-to-end.`);

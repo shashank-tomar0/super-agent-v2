@@ -26,10 +26,9 @@ const maskCredentialsEl = $<HTMLInputElement>("maskCredentials");
 const tokenizePIIEl = $<HTMLInputElement>("tokenizePII");
 const showRedactionLabelsEl = $<HTMLInputElement>("showRedactionLabels");
 
-// Server elements
-const serverEnabledEl = $<HTMLInputElement>("serverEnabled");
-const serverUrlEl = $<HTMLInputElement>("serverUrl");
-const serverApiKeyEl = $<HTMLInputElement>("serverApiKey");
+// Vision elements
+const visionEnabledEl = $<HTMLInputElement>("visionEnabled");
+const visionModelEl = $<HTMLInputElement>("visionModel");
 
 // ─── State ─────────────────────────────────────────────────────────────────
 
@@ -110,10 +109,9 @@ function renderAll(): void {
   tokenizePIIEl.checked = settings.privacy.tokenizePII;
   showRedactionLabelsEl.checked = settings.privacy.showRedactionLabels;
 
-  // Server.
-  serverEnabledEl.checked = settings.server.enabled;
-  serverUrlEl.value = settings.server.url;
-  serverApiKeyEl.value = settings.server.apiKey;
+  // Vision.
+  visionEnabledEl.checked = settings.vision.enabled;
+  visionModelEl.value = settings.vision.model;
 
   // Model datalist.
   renderModelOptions();
@@ -135,9 +133,8 @@ function renderModelOptions(): void {
 function captureFields(): void {
   settings.apiKeys[settings.provider] = apiKeyEl.value.trim();
   settings.models[settings.provider] = modelEl.value.trim();
-  settings.server.enabled = serverEnabledEl.checked;
-  settings.server.url = serverUrlEl.value.trim() || "http://localhost:3001";
-  settings.server.apiKey = serverApiKeyEl.value.trim();
+  settings.vision.enabled = visionEnabledEl.checked;
+  settings.vision.model = visionModelEl.value.trim();
   settings.privacy.blurFaces = blurFacesEl.checked;
   settings.privacy.maskCredentials = maskCredentialsEl.checked;
   settings.privacy.tokenizePII = tokenizePIIEl.checked;

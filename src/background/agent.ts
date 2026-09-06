@@ -34,6 +34,7 @@ import { extractDomain, classifyPageType } from "./experience-memory";
 import { detectContextualPII, contextualToDetectedPII } from "./contextual-pii";
 import { getApplicableRules, buildSuppressionKeys, recommendsLLMOnly } from "./learned-rules";
 import { piiKindFromOcrLabel } from "./reocr-verification";
+import { observeWithVision, VISION_SUPPORTED, VISION_DEFAULT_MODELS } from "./vision";
 import {
   initLedger, recordSnapshot, recordDetections,
   recordAction as ledgerRecordAction,
@@ -238,6 +239,13 @@ export async function runTask(
   // the badge shows the honest byte count instead of a fake "0 KB".
   const remotePlanner = settings.provider !== "ollama";
 
+  // Optional VLM vision: active only when the user enabled it AND the active
+  // provider supports image input. Only the REDACTED screenshot and sanitized
+  // text are sent; the request bytes count toward the honest egress badge.
+  const visionEnabled = settings.vision.enabled && VISION_SUPPORTED[settings.provider];
+  const visionModel = (settings.vision.model || "").trim() || VISION_DEFAULT_MODELS[settings.provider];
+  const visionApiKey = settings.apiKeys[settings.provider] ?? "";
+
   // False positives (learned-rule suppressions + checksum rejects) become
   // measured signals — deduped so the same number is not counted per snapshot.
   const fpSeen = new Set<string>();
@@ -265,6 +273,31 @@ export async function runTask(
       reocrLeakedPII.push(leak);
       const label = leak.replace(/^OCR:\s*/, "");
       trackedPII.push({ kind: piiKindFromOcrLabel(label), method: "ocr", outcome: "missed", confidence: 0.6 });
+    }
+  }
+
+  // ── Optional VLM vision ──
+  let initialVisionNote = "";
+
+  /**
+   * Sends the REDACTED screenshot to the vision model and folds its
+   * description into `fallback`. Best-effort by design: any failure degrades
+   * to the DOM-only observation and never blocks the run.
+   */
+  async function observeScreen(redactedDataUrl: string, fallback: string): Promise<string> {
+    if (!visionEnabled || !visionApiKey) return fallback;
+    const context = snapshot ? renderSnapshot(snapshot) : `URL: ${tab.url ?? ""}`;
+    try {
+      const vision = await observeWithVision(
+        settings.provider, visionModel, visionApiKey, redactedDataUrl, context, signal,
+      );
+      sessionEgressBytes += vision.bytes;
+      estimatedTokens += Math.ceil(vision.bytes / 4);
+      emit({ kind: "egress", bytes: sessionEgressBytes });
+      return `${fallback}\n\n[VLM observation (${vision.model}): ${vision.text}]`;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message.slice(0, 140) : "vision unavailable";
+      return `${fallback}\n\n[VLM observation unavailable: ${reason}]`;
     }
   }
 
@@ -445,6 +478,13 @@ export async function runTask(
           redactedCount: processed.redactedCount,
           verification,
         });
+
+        // Optional VLM vision: only the redacted screenshot leaves. Its
+        // description rides in the first planner turn so the agent genuinely
+        // sees the screen before planning a single action.
+        if (visionEnabled && visionApiKey && !signal.aborted) {
+          initialVisionNote = await observeScreen(processed.redactedDataUrl, "");
+        }
       }
     } catch {
       // Screenshot capture is optional — DOM perception still works.
@@ -483,7 +523,8 @@ export async function runTask(
       role: "user",
       content:
         taskPrompt(tokenizedTask, tab.url ?? "", tab.title ?? "") +
-        (snapshot ? `\n\n--- Current page ---\n${renderSnapshot(snapshot)}` : ""),
+        (snapshot ? `\n\n--- Current page ---\n${renderSnapshot(snapshot)}` : "") +
+        (initialVisionNote ? `\n\n${initialVisionNote}` : ""),
     },
   ];
 
@@ -934,6 +975,12 @@ ${freshRendered}`,
                   redactedCount: processed.redactedCount,
                   verification,
                 });
+
+                // Optional VLM vision: describe the redacted screen for the
+                // planner. Request bytes count toward the honest egress badge.
+                if (visionEnabled && visionApiKey && !signal.aborted) {
+                  observation = await observeScreen(processed.redactedDataUrl, observation);
+                }
               }
             } catch {
               // Screenshot is optional.
