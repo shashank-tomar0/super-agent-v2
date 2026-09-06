@@ -220,13 +220,14 @@ export interface PrivacySettings {
 
 export const DEFAULT_SETTINGS: Settings = {
   provider: "ollama",
-  apiKeys: { anthropic: "", openai: "", openrouter: "", ollama: "", groq: "" },
+  apiKeys: { anthropic: "", openai: "", openrouter: "", ollama: "", groq: "", nvidia: "" },
   models: {
     anthropic: "claude-opus-5",
     openai: "gpt-5",
     openrouter: "anthropic/claude-opus-5",
     ollama: "qwen2.5:1.5b",
     groq: "openai/gpt-oss-20b",
+    nvidia: "meta/llama-3.3-70b-instruct",
   },
   maxSteps: 40,
   confirmRisky: true,

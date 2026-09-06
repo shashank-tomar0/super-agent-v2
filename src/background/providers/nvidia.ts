@@ -1,24 +1,35 @@
+/**
+ * NVIDIA NIM Planner
+ *
+ * Uses NVIDIA's OpenAI-compatible endpoint at integrate.api.nvidia.com.
+ * Free tier: 40 RPM, 100+ models including 70B+ for free.
+ * No credit card required. Sign up at build.nvidia.com.
+ *
+ * Key models:
+ *   - meta/llama-3.3-70b-instruct (70B, free)
+ *   - meta/llama-3.1-70b-instruct (70B, free)
+ *   - deepseek-ai/deepseek-v4-pro (frontier, free)
+ *   - qwen/qwq-32b (32B, free)
+ *   - nvidia/llama-3.3-nemotron-super-49b-v1.5 (49B, free)
+ */
+
 import OpenAI from "openai";
 import type {
   ConvMessage,
   Planner,
   PlannerRequest,
   PlannerTurn,
-  ProviderId,
   StopReason,
   ToolSpec,
 } from "./types";
 import { PlannerError, parseArguments } from "./types";
 
-type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
+const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 
-/**
- * OpenAI keeps assistant prose and tool calls on one message, and expects each
- * tool result as its own `role: "tool"` message — so one canonical tool turn
- * fans out into several messages here.
- */
-export function toMessages(system: string, messages: ConvMessage[]): ChatMessage[] {
-  const out: ChatMessage[] = [{ role: "system", content: system }];
+function toMessages(system: string, messages: ConvMessage[]): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+  const out: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: "system", content: system },
+  ];
 
   for (const message of messages) {
     if (message.role === "user") {
@@ -47,7 +58,6 @@ export function toMessages(system: string, messages: ConvMessage[]): ChatMessage
       out.push({
         role: "tool",
         tool_call_id: result.id,
-        // There is no is_error flag here, so the marker goes inline.
         content: result.isError ? `ERROR: ${result.content}` : result.content,
       });
     }
@@ -74,46 +84,15 @@ function toStopReason(raw: string | null | undefined, hasToolCalls: boolean): St
   return "end_turn";
 }
 
-const ENDPOINTS: Record<Exclude<ProviderId, "anthropic">, string> = {
-  openai: "https://api.openai.com/v1",
-  openrouter: "https://openrouter.ai/api/v1",
-  ollama: "http://localhost:11434/v1",
-  groq: "https://api.groq.com/openai/v1",
-  nvidia: "https://integrate.api.nvidia.com/v1",
-};
-
-/**
- * Serves both OpenAI and OpenRouter — OpenRouter exposes the same chat
- * completions surface, so only the base URL and a couple of headers differ.
- */
-export function createOpenAIPlanner(
-  provider: Exclude<ProviderId, "anthropic">,
-  apiKey: string,
-  model: string,
-  customBaseURL?: string,
-): Planner {
+export function createNvidiaPlanner(apiKey: string, model: string): Planner {
   const client = new OpenAI({
     apiKey,
-    baseURL: customBaseURL ?? ENDPOINTS[provider],
+    baseURL: NVIDIA_BASE_URL,
     dangerouslyAllowBrowser: true,
-    defaultHeaders:
-      provider === "openrouter"
-        ? // OpenRouter attributes traffic with these; both are optional.
-          { "HTTP-Referer": "https://github.com/vless/vless-agent", "X-Title": "VLESS Agent" }
-        : undefined,
   });
 
-  const labels: Record<Exclude<ProviderId, "anthropic">, string> = {
-    openai: "OpenAI",
-    openrouter: "OpenRouter",
-    ollama: "Ollama (Local)",
-    groq: "Groq",
-    nvidia: "NVIDIA",
-  };
-  const label = labels[provider] ?? provider;
-
   return {
-    label: `${label} ${model}`,
+    label: `NVIDIA ${model}`,
 
     async run({ system, messages, tools, signal, onText }: PlannerRequest): Promise<PlannerTurn> {
       let stream: Awaited<ReturnType<typeof client.chat.completions.create>>;
@@ -125,25 +104,17 @@ export function createOpenAIPlanner(
             messages: toMessages(system, messages),
             tools: toTools(tools),
             stream: true,
-            // OpenAI renamed this for reasoning models; OpenRouter takes the
-            // original name and passes it through to whichever model is behind it.
-            // Ollama uses max_tokens.
-            ...(provider === "openai"
-              ? { max_completion_tokens: 8000 }
-              : { max_tokens: 8000 }),
+            max_tokens: 8000,
           },
           { signal },
         );
       } catch (error) {
-        throw describe(error, label);
+        throw describe(error);
       }
 
       let text = "";
       let refusal = "";
       let finishReason: string | null | undefined;
-
-      // Tool calls stream in as deltas keyed by index — name arrives once, then
-      // arguments accumulate across many chunks as raw JSON text.
       const partials = new Map<number, { id: string; name: string; args: string }>();
 
       try {
@@ -168,15 +139,13 @@ export function createOpenAIPlanner(
           }
         }
       } catch (error) {
-        throw describe(error, label);
+        throw describe(error);
       }
 
       const toolCalls = Array.from(partials.entries())
         .sort(([a], [b]) => a - b)
         .filter(([, call]) => call.name)
         .map(([index, call]) => ({
-          // Some OpenAI-compatible backends omit ids; the id only has to be
-          // unique within the turn for the tool result to match up.
           id: call.id || `call_${index}`,
           name: call.name,
           input: parseArguments(call.args),
@@ -195,21 +164,20 @@ export function createOpenAIPlanner(
   };
 }
 
-function describe(error: unknown, label: string): Error {
+function describe(error: unknown): Error {
   if (error instanceof OpenAI.AuthenticationError) {
-    return new PlannerError(`${label} rejected your API key. Check it in the extension options.`);
+    return new PlannerError("NVIDIA rejected your API key. Get one free at build.nvidia.com.");
   }
   if (error instanceof OpenAI.RateLimitError) {
-    return new PlannerError(`${label} rate-limited this request. Wait a moment and retry.`);
+    return new PlannerError("NVIDIA rate-limited this request (40 RPM free tier). Wait a moment and retry.");
   }
   if (error instanceof OpenAI.NotFoundError) {
     return new PlannerError(
-      `${label} does not recognise that model id, or your key cannot access it. ` +
-        `Pick another model in the extension options.`,
+      "NVIDIA does not recognise that model id. Check build.nvidia.com/models for available models.",
     );
   }
   if (error instanceof OpenAI.APIError) {
-    return new PlannerError(`${label} API error ${error.status}: ${error.message}`);
+    return new PlannerError(`NVIDIA API error ${error.status}: ${error.message}`);
   }
   return error instanceof Error ? error : new Error(String(error));
 }

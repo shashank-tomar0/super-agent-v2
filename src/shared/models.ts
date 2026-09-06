@@ -83,6 +83,22 @@ export const PROVIDERS: Record<ProviderId, ProviderInfo> = {
     ],
     defaultModel: "openai/gpt-oss-20b",
   },
+  nvidia: {
+    id: "nvidia",
+    label: "NVIDIA NIM",
+    keyUrl: "https://build.nvidia.com",
+    keyHint: "nvapi-...",
+    suggested: [
+      "meta/llama-3.3-70b-instruct",
+      "meta/llama-3.1-70b-instruct",
+      "deepseek-ai/deepseek-v4-pro",
+      "deepseek-ai/deepseek-v4-flash",
+      "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+      "qwen/qwq-32b",
+      "meta/llama-3.1-8b-instruct",
+    ],
+    defaultModel: "meta/llama-3.3-70b-instruct",
+  },
 };
 
 export const PROVIDER_IDS = Object.keys(PROVIDERS) as ProviderId[];
@@ -125,8 +141,21 @@ export async function listModels(
     return (body.data ?? [])
       .map((m) => m.id)
       .filter((id): id is string => Boolean(id))
-      // Only include text/chat models, not whisper or embedding models.
       .filter((id) => /^(llama|openai\/gpt|qwen\/qwen|mixtral|gemma)/.test(id))
+      .sort();
+  }
+
+  if (provider === "nvidia") {
+    const response = await fetch("https://integrate.api.nvidia.com/v1/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!response.ok) throw new Error(`NVIDIA returned ${response.status}`);
+    const body = (await response.json()) as { data?: { id?: string }[] };
+    return (body.data ?? [])
+      .map((m) => m.id)
+      .filter((id): id is string => Boolean(id))
+      // Only include chat/text models, not embedding or safety models.
+      .filter((id) => /^(meta|deepseek|qwen|nvidia\/llama|mistralai|openai\/gpt)/.test(id))
       .sort();
   }
 

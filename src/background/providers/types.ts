@@ -6,7 +6,7 @@
  * normalises into the types below and the loop only ever sees these.
  */
 
-export type ProviderId = "anthropic" | "openai" | "openrouter" | "ollama" | "groq";
+export type ProviderId = "anthropic" | "openai" | "openrouter" | "ollama" | "groq" | "nvidia";
 
 /** A tool definition, in the intersection both APIs accept. */
 export interface ToolSpec {
