@@ -180,7 +180,8 @@ export type PanelCommand =
   | { kind: "get-history" }
   | { kind: "delete-history"; sessionId?: string; clearAll?: boolean }
   | { kind: "get-learning-stats" }
-  | { kind: "clear-learning" };
+  | { kind: "clear-learning" }
+  | { kind: "get-ledger" };
 
 export interface Settings {
   provider: ProviderId;

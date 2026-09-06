@@ -973,6 +973,94 @@ body::after {
   background: var(--color-paper-2);
 }
 
+/* ─── Privacy Ledger ────────────────────────────────────────────── */
+
+.ledger-section { padding: 0 16px 12px; }
+.ledger-section h4 {
+  margin: 0 0 8px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+}
+
+.ledger-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.ledger-stat {
+  text-align: center;
+  padding: 6px 4px;
+  border: 1.5px solid var(--color-ink);
+  background: var(--color-paper);
+}
+.ledger-stat .number {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 900;
+  display: block;
+}
+.ledger-stat .label {
+  font-family: var(--font-mono);
+  font-size: 7px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  display: block;
+  margin-top: 2px;
+}
+.ledger-stat .number.verified { color: var(--color-teal); }
+.ledger-stat .number.tampered { color: var(--color-accent); }
+
+.ledger-entries {
+  max-height: 120px;
+  overflow-y: auto;
+  border: 1px solid var(--color-hairline);
+  background: var(--color-paper);
+}
+.ledger-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--color-hairline);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  line-height: 1.4;
+}
+.ledger-entry:last-child { border-bottom: none; }
+.ledger-entry .seq {
+  color: var(--color-ink-3);
+  min-width: 24px;
+}
+.ledger-entry .type-badge {
+  padding: 1px 4px;
+  border: 1px solid var(--color-ink);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 7px;
+  letter-spacing: 0.05em;
+}
+.ledger-entry .type-badge.snapshot { border-color: var(--color-teal); color: var(--color-teal); }
+.ledger-entry .type-badge.detection { border-color: var(--color-accent); color: var(--color-accent); }
+.ledger-entry .type-badge.redact { border-color: #e67e22; color: #e67e22; }
+.ledger-entry .type-badge.action { border-color: var(--color-ink); color: var(--color-ink); }
+.ledger-entry .type-badge.tokenize { border-color: #8e44ad; color: #8e44ad; }
+.ledger-entry .type-badge.resolve { border-color: #2980b9; color: #2980b9; }
+.ledger-entry .type-badge.verification { border-color: var(--color-teal); color: var(--color-teal); }
+.ledger-entry .detail {
+  flex: 1;
+  color: var(--color-ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ledger-entry .hash-prefix {
+  color: var(--color-ink-3);
+  font-size: 7px;
+}
+
 /* ─── Utility ──────────────────────────────────────────────────────── */
 
 .hidden { display: none !important; }

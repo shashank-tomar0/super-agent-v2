@@ -10,6 +10,7 @@ import { runTask } from "./agent";
 import { saveSession, getSessions, deleteSession, clearHistory } from "./history";
 import { recordExperience, getMemoryStats } from "./experience-memory";
 import { reflectOnRun } from "./reflection";
+import { getLedgerSummary } from "./privacy-ledger";
 import { applyReflectionResults, getLearnedRules, getRulesSummary } from "./learned-rules";
 import type { RunExperience } from "./experience-memory";
 
@@ -464,6 +465,13 @@ chrome.runtime.onMessage.addListener(
           await clearExperienceMemory();
           await clearLearnedRules();
           sendResponse({ ok: true });
+        })();
+        return true;
+
+      case "get-ledger":
+        void (async () => {
+          const ledgerSummary = await getLedgerSummary();
+          sendResponse({ ledgerSummary });
         })();
         return true;
 

@@ -343,7 +343,55 @@ function renderLearningDashboard(stats: {
     reflectionEl.innerHTML = "";
   }
 
+  // Privacy ledger.
+  loadLedger();
+
   learningDashboardEl.scrollIntoView({ behavior: "smooth" });
+}
+
+// ─── Privacy Ledger Display ────────────────────────────────────────────────
+
+async function loadLedger(): Promise<void> {
+  const ledgerEl = $("ledger-section");
+  const response = (await send({ kind: "get-ledger" })) as any;
+  if (!response?.ledgerSummary) {
+    ledgerEl.innerHTML = "";
+    return;
+  }
+  const ls = response.ledgerSummary;
+
+  const chainClass = ls.chainValid ? "verified" : "tampered";
+  const chainLabel = ls.chainValid ? "INTACT" : "TAMPERED";
+
+  ledgerEl.innerHTML = `
+    <h4>Privacy Ledger</h4>
+    <div class="ledger-summary">
+      <div class="ledger-stat">
+        <span class="number">${ls.totalEntries}</span>
+        <span class="label">ENTRIES</span>
+      </div>
+      <div class="ledger-stat">
+        <span class="number">${ls.totalDetections}</span>
+        <span class="label">DETECTIONS</span>
+      </div>
+      <div class="ledger-stat">
+        <span class="number">${ls.totalRedactions}</span>
+        <span class="label">REDACTIONS</span>
+      </div>
+      <div class="ledger-stat">
+        <span class="number">${ls.totalSnapshots}</span>
+        <span class="label">SNAPSHOTS</span>
+      </div>
+      <div class="ledger-stat">
+        <span class="number">${ls.totalActions}</span>
+        <span class="label">ACTIONS</span>
+      </div>
+      <div class="ledger-stat">
+        <span class="number ${chainClass}">${chainLabel}</span>
+        <span class="label">CHAIN</span>
+      </div>
+    </div>
+  `;
 }
 
 // ─── Confirm Dialog ────────────────────────────────────────────────────────

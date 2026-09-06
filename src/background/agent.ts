@@ -34,6 +34,7 @@ import { detectContextualPII, contextualToDetectedPII } from "./contextual-pii";
 import {
   initLedger, recordSnapshot, recordDetections,
   recordAction as ledgerRecordAction,
+  recordTokenization as ledgerRecordTokenization,
 } from "./privacy-ledger";
 
 let counter = 0;
@@ -174,7 +175,7 @@ export async function runTask(
   let errorCount = 0;
 
   // ── Privacy Budget Ledger ──
-  initLedger();
+  await initLedger();
 
   let controller = new TabController(startTabId);
   const tab = await chrome.tabs.get(startTabId);
@@ -220,6 +221,13 @@ export async function runTask(
     if (detections.length > 0) {
       recordDetections(detections.map((d) => ({ ...d, label: d.kind }))).catch(() => {});
     }
+
+    // Record tokenization in privacy ledger.
+    const tokenSummary = tokenizer.getTokenSummary();
+    if (tokenSummary.length > 0) {
+      ledgerRecordTokenization(tokenSummary).catch(() => {});
+    }
+
     piiTotal += piiCount;
 
     // Track PII detections for experience memory.

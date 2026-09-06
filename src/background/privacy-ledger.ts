@@ -5,8 +5,10 @@
  * privacy-relevant action the agent takes. Each entry is SHA-256 hashed
  * and chained to the previous entry, making tampering detectable.
  *
- * This is the "enterprise-grade" feature that proves VLESS's privacy
- * claims are verifiable, not just asserted.
+ * Entries are persisted to chrome.storage.local so the ledger survives
+ * service worker restarts and can be queried from the dashboard.
+ *
+ * Storage key: "vless-privacy-ledger"
  */
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -44,6 +46,33 @@ export interface PrivacyLedger {
   };
 }
 
+// ─── Storage ────────────────────────────────────────────────────────────────
+
+const STORAGE_KEY = "vless-privacy-ledger";
+const MAX_ENTRIES = 500;
+
+interface LedgerStore {
+  entries: LedgerEntry[];
+  entryCounter: number;
+  lastHash: string;
+}
+
+async function loadStore(): Promise<LedgerStore> {
+  const { [STORAGE_KEY]: store } = await chrome.storage.local.get(STORAGE_KEY);
+  if (store && Array.isArray(store.entries)) {
+    return store as LedgerStore;
+  }
+  return { entries: [], entryCounter: 0, lastHash: "0".repeat(64) };
+}
+
+async function saveStore(store: LedgerStore): Promise<void> {
+  // Trim to max entries.
+  if (store.entries.length > MAX_ENTRIES) {
+    store.entries = store.entries.slice(store.entries.length - MAX_ENTRIES);
+  }
+  await chrome.storage.local.set({ [STORAGE_KEY]: store });
+}
+
 // ─── SHA-256 Helper ─────────────────────────────────────────────────────────
 
 async function sha256(message: string): Promise<string> {
@@ -55,31 +84,28 @@ async function sha256(message: string): Promise<string> {
 
 // ─── Ledger Implementation ──────────────────────────────────────────────────
 
-let currentEntries: LedgerEntry[] = [];
-let entryCounter = 0;
-let lastHash = "0".repeat(64); // Genesis hash.
-
 /**
  * Initialize the ledger for a new session.
+ * Loads existing entries from storage and resets for a new session.
  */
-export function initLedger(): void {
-  currentEntries = [];
-  entryCounter = 0;
-  lastHash = "0".repeat(64);
+export async function initLedger(): Promise<void> {
+  // We don't clear existing entries - we append to them.
+  // This way the ledger grows across sessions.
 }
 
 /**
- * Add an entry to the ledger.
+ * Add an entry to the ledger and persist to storage.
  */
 export async function addEntry(
   type: LedgerEntry["type"],
   data: Record<string, unknown>,
 ): Promise<LedgerEntry> {
-  const seq = ++entryCounter;
+  const store = await loadStore();
+  const seq = store.entryCounter + 1;
   const timestamp = Date.now();
 
   // Build the content to hash (excluding hash fields).
-  const content = JSON.stringify({ seq, timestamp, type, data, prevHash: lastHash });
+  const content = JSON.stringify({ seq, timestamp, type, data, prevHash: store.lastHash });
   const hash = await sha256(content);
 
   const entry: LedgerEntry = {
@@ -88,11 +114,14 @@ export async function addEntry(
     type,
     data,
     hash,
-    prevHash: lastHash,
+    prevHash: store.lastHash,
   };
 
-  lastHash = hash;
-  currentEntries.push(entry);
+  store.lastHash = hash;
+  store.entryCounter = seq;
+  store.entries.push(entry);
+
+  await saveStore(store);
 
   return entry;
 }
@@ -158,9 +187,10 @@ export async function recordVerification(passed: boolean, regionsChecked: number
 }
 
 /**
- * Get the complete ledger for a session.
+ * Get the complete ledger with chain integrity verification.
  */
 export async function getLedger(): Promise<PrivacyLedger> {
+  const store = await loadStore();
   const summary = {
     totalSnapshots: 0,
     totalDetections: 0,
@@ -173,7 +203,7 @@ export async function getLedger(): Promise<PrivacyLedger> {
 
   // Verify chain integrity.
   let prevHash = "0".repeat(64);
-  for (const entry of currentEntries) {
+  for (const entry of store.entries) {
     // Check chain link.
     if (entry.prevHash !== prevHash) {
       summary.chainValid = false;
@@ -208,9 +238,55 @@ export async function getLedger(): Promise<PrivacyLedger> {
   }
 
   return {
-    sessionId: `session-${currentEntries[0]?.timestamp ?? Date.now()}`,
-    entries: currentEntries,
+    sessionId: `session-${store.entries[0]?.timestamp ?? Date.now()}`,
+    entries: store.entries,
     summary,
+  };
+}
+
+/**
+ * Get just the summary (lighter than full getLedger, no chain verification).
+ */
+export async function getLedgerSummary(): Promise<{
+  totalEntries: number;
+  chainValid: boolean;
+  totalSnapshots: number;
+  totalDetections: number;
+  totalRedactions: number;
+  totalActions: number;
+  lastEntryType: string | null;
+}> {
+  const store = await loadStore();
+  const entries = store.entries;
+  let totalSnapshots = 0;
+  let totalDetections = 0;
+  let totalRedactions = 0;
+  let totalActions = 0;
+
+  // Quick chain check (just links, no hash re-verification for speed).
+  let chainValid = true;
+  let prevHash = "0".repeat(64);
+  for (const entry of entries) {
+    if (entry.prevHash !== prevHash) {
+      chainValid = false;
+    }
+    switch (entry.type) {
+      case "snapshot": totalSnapshots++; break;
+      case "detection": totalDetections += (entry.data.count as number) ?? 0; break;
+      case "redact": totalRedactions += (entry.data.redactedCount as number) ?? 0; break;
+      case "action": totalActions++; break;
+    }
+    prevHash = entry.hash;
+  }
+
+  return {
+    totalEntries: entries.length,
+    chainValid,
+    totalSnapshots,
+    totalDetections,
+    totalRedactions,
+    totalActions,
+    lastEntryType: entries.length > 0 ? entries[entries.length - 1].type : null,
   };
 }
 
@@ -220,4 +296,11 @@ export async function getLedger(): Promise<PrivacyLedger> {
 export async function exportLedger(): Promise<string> {
   const ledger = await getLedger();
   return JSON.stringify(ledger, null, 2);
+}
+
+/**
+ * Clear the ledger.
+ */
+export async function clearLedger(): Promise<void> {
+  await chrome.storage.local.remove(STORAGE_KEY);
 }
