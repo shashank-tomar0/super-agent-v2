@@ -75,6 +75,7 @@ function renderSnapshot(snapshot: PageSnapshot): string {
 function sanitizeSnapshot(snapshot: PageSnapshot): {
   sanitized: PageSnapshot;
   piiCount: number;
+  detections: Array<{ kind: string; method: string; confidence: number }>;
 } {
   // 1. Detect PII in the DOM snapshot.
   const detections = detectAllPII(snapshot);
@@ -98,6 +99,7 @@ function sanitizeSnapshot(snapshot: PageSnapshot): {
       text,
     },
     piiCount: redactedCount + tokenized.tokenCount,
+    detections: detections.map((d) => ({ kind: d.kind, method: "regex", confidence: d.confidence })),
   };
 }
 
@@ -191,17 +193,17 @@ export async function runTask(
 
   let piiTotal = 0;
   if (snapshot) {
-    const { sanitized, piiCount } = sanitizeSnapshot(snapshot);
+    const { sanitized, piiCount, detections } = sanitizeSnapshot(snapshot);
     snapshot = sanitized;
     piiTotal += piiCount;
 
     // Track PII detections for experience memory.
-    if (piiCount > 0) {
+    for (const det of detections) {
       trackedPII.push({
-        kind: "dom_pii",
-        method: "regex",
+        kind: det.kind,
+        method: det.method,
         outcome: "true_positive",
-        confidence: 0.8,
+        confidence: det.confidence,
       });
     }
 
@@ -342,8 +344,20 @@ export async function runTask(
         const detDecision = gate(detResult.action, snapshot, settings.confirmRisky);
         if (detDecision.verdict === "allow") {
           recordAction(detResult.action.name, detResult.action.input);
+          const detStart = performance.now();
           const detOutcome = await execute(controller, detResult.action);
+          const detLatency = performance.now() - detStart;
           controller = detOutcome.controller;
+
+          // Track deterministic action for experience memory.
+          trackedActions.push({
+            tool: detResult.action.name,
+            success: detOutcome.result.ok,
+            latencyMs: detLatency,
+            strategy: "deterministic",
+            error: detOutcome.result.ok ? undefined : detOutcome.result.detail,
+          });
+
           emit({ kind: "patch", id: detId, text: detOutcome.result.detail, pending: false });
 
           if (detOutcome.result.snapshot) {
@@ -542,7 +556,7 @@ export async function runTask(
           snapshot = fresh;
 
           // Apply privacy pipeline to fresh snapshot.
-          const { sanitized, piiCount } = sanitizeSnapshot(snapshot);
+          const { sanitized, piiCount, detections: freshDetections } = sanitizeSnapshot(snapshot);
           snapshot = sanitized;
 
           // For small models, truncate fresh snapshots to avoid context overflow.
@@ -554,6 +568,16 @@ export async function runTask(
             };
           }
           piiTotal += piiCount;
+
+          // Track PII detections from fresh snapshot.
+          for (const det of freshDetections) {
+            trackedPII.push({
+              kind: det.kind,
+              method: det.method,
+              outcome: "true_positive",
+              confidence: det.confidence,
+            });
+          }
 
           warnIfInjected(fresh, emit);
 

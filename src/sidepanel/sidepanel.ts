@@ -374,7 +374,8 @@ $("btn-learning").addEventListener("click", async () => {
       | { stats?: Record<string, unknown>; rulesSummary?: Record<string, unknown> }
       | undefined;
     if (response?.stats) {
-      renderLearningDashboard(response.stats as any);
+      const merged = { ...response.stats, rulesSummary: response.rulesSummary ?? {} };
+      renderLearningDashboard(merged as any);
     }
   }
 });
