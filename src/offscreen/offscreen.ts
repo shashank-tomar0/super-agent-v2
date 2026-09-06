@@ -312,16 +312,19 @@ async function processScreenshot(
   const blob = await response.blob();
   const imageBitmap = await createImageBitmap(blob);
 
-  // Create canvas for redaction.
+  // Create canvas for redaction. willReadFrequently is required: the blur
+  // path and verification read pixels back with getImageData/putImageData, and
+  // without it Chrome warns (and drops to slow software readback) on every
+  // screenshot.
   const canvas = new OffscreenCanvas(width, height);
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
   ctx.drawImage(imageBitmap, 0, 0);
   imageBitmap.close();
 
   // Keep an untouched copy of the original pixels: re-OCR verification and the
   // skin-color fallback both compare against the pre-redaction image.
   const originalCanvas = new OffscreenCanvas(width, height);
-  const originalCtx = originalCanvas.getContext("2d")!;
+  const originalCtx = originalCanvas.getContext("2d", { willReadFrequently: true })!;
   originalCtx.drawImage(canvas, 0, 0);
 
   // Every region actually redacted, in device-pixel coordinates, so the
@@ -453,7 +456,7 @@ async function processScreenshot(
     try {
       const redactedBitmap = await createImageBitmap(redactedBlob);
       const verifyCanvas = new OffscreenCanvas(width, height);
-      const verifyCtx = verifyCanvas.getContext("2d")!;
+      const verifyCtx = verifyCanvas.getContext("2d", { willReadFrequently: true })!;
       verifyCtx.drawImage(redactedBitmap, 0, 0);
       redactedBitmap.close();
       const redactedData = verifyCtx.getImageData(0, 0, width, height);
