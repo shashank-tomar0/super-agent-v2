@@ -369,16 +369,24 @@ $("audit-close").addEventListener("click", () => {
 $("btn-learning").addEventListener("click", async () => {
   learningDashboardEl.classList.toggle("hidden");
   if (!learningDashboardEl.classList.contains("hidden")) {
-    // Fetch current learning stats.
+    // Fetch current learning stats and map raw MemoryStats fields to dashboard format.
     const response = (await send({ kind: "get-learning-stats" })) as any;
     if (response && response.stats) {
-      const merged = {
-        ...response.stats,
+      const s = response.stats;
+      renderLearningDashboard({
+        totalRuns: s.totalRuns ?? 0,
+        successRate: Math.round((s.averageSuccessRate ?? 0) * 100),
+        piiDetected: s.totalPIIDetected ?? 0,
+        piiRedacted: s.totalPIIRedacted ?? 0,
+        falsePositives: s.totalFalsePositives ?? 0,
+        missedPII: s.totalMissedPII ?? 0,
+        sitesVisited: s.sitesVisited ?? 0,
+        rulesLearned: s.rulesLearned ?? 0,
+        improvementDelta: s.improvementDelta ?? 0,
         rulesSummary: response.rulesSummary ?? { total: 0, byCategory: {}, highConfidence: 0, recentlyCreated: 0 },
-      };
-      renderLearningDashboard(merged);
+        lastReflection: "",
+      });
     } else {
-      // No data yet - render empty state.
       renderLearningDashboard({
         totalRuns: 0, successRate: 0, piiDetected: 0, piiRedacted: 0,
         falsePositives: 0, missedPII: 0, sitesVisited: 0, rulesLearned: 0,
