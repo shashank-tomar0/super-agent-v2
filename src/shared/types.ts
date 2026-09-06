@@ -227,7 +227,7 @@ export const DEFAULT_SETTINGS: Settings = {
     openrouter: "anthropic/claude-opus-5",
     ollama: "qwen2.5:1.5b",
     groq: "openai/gpt-oss-20b",
-    nvidia: "deepseek-ai/deepseek-v4-flash",
+    nvidia: "nvidia/nemotron-3.5-lightning-30b-a3b",
   },
   maxSteps: 40,
   confirmRisky: true,
